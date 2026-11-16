@@ -1,0 +1,26 @@
+# Python 缓存
+__pycache__/
+*.py[cod]
+*.log
+
+# 构建产物：由 installer/build.py 重新生成，不入库
+build/
+dist/
+安装包/
+
+# 图标候选过程稿（最终图标为根目录 keyhint.ico）
+图标候选/
+
+# 含个人桌面 / 聊天记录的未脱敏实机截图，禁止入库
+实机效果*.png
+打包版运行效果.png
+安装界面预览.png
+已恢复_按住Ctrl效果图.png
+
+# 本地环境与编辑器
+.env
+.venv/
+venv/
+*.code-workspace
+.DS_Store
+Thumbs.db

@@ -1,0 +1,2 @@
+# KeyHint 唯一第三方依赖
+Pillow>=9.0
