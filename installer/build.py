@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 """
 一键产出交付物：
-  安装包/KeyHint_Setup_4.07.exe   —— 单文件图形化安装程序（拷到另一台电脑双击即可）
-  安装包/KeyHint_绿色版_4.07.zip  —— 免安装备用（解压后直接运行 KeyHint.exe）
+  安装包/指点江山_Setup_4.12.exe   —— 单文件图形化安装程序（拷到另一台电脑双击即可）
+  安装包/指点江山_绿色版_4.12.zip  —— 免安装备用（解压后直接运行 指点江山.exe）
   安装包/SHA256.txt
 
-前置：先跑 KeyHint.spec（或 build_app 命令）产出 build/dist/KeyHint/
+前置：先跑 KeyHint.spec（或 build_app 命令）产出 build/dist/指点江山/
 用法：python installer/build.py
 """
 from __future__ import annotations
@@ -18,16 +18,16 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 BUILD = ROOT / "build"
-APP_DIR = BUILD / "dist" / "KeyHint"
+APP_DIR = BUILD / "dist" / "指点江山"
 PAYLOAD = BUILD / "payload.zip"
 OUT_DIR = ROOT / "安装包"
-SETUP_EXE_NAME = "KeyHint_Setup_4.07.exe"
-PORTABLE_NAME = "KeyHint_绿色版_4.07.zip"
+SETUP_EXE_NAME = "指点江山_Setup_4.12.exe"
+PORTABLE_NAME = "指点江山_绿色版_4.12.zip"
 
 
 def make_payload():
-    if not (APP_DIR / "KeyHint.exe").exists():
-        raise SystemExit("找不到 %s，请先构建主程序。" % (APP_DIR / "KeyHint.exe"))
+    if not (APP_DIR / "指点江山.exe").exists():
+        raise SystemExit("找不到 %s，请先构建主程序。" % (APP_DIR / "指点江山.exe"))
     BUILD.mkdir(parents=True, exist_ok=True)
     if PAYLOAD.exists():
         PAYLOAD.unlink()
@@ -44,7 +44,7 @@ def make_setup():
     cmd = [
         sys.executable, "-m", "PyInstaller",
         "--noconfirm", "--clean", "--onefile", "--noconsole",
-        "--name", "KeyHint_Setup", "--icon", str(ROOT / "keyhint.ico"),
+        "--name", "指点江山_Setup", "--icon", str(ROOT / "keyhint.ico"),
         "--distpath", str(BUILD / "setup"),
         "--workpath", str(BUILD / "work_setup"),
         # 生成的临时 spec 放到 build/，避免覆盖 installer/ 下手工维护的
@@ -57,7 +57,7 @@ def make_setup():
     print("构建安装器…")
     subprocess.run(cmd, cwd=str(ROOT), check=True)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    src = BUILD / "setup" / "KeyHint_Setup.exe"
+    src = BUILD / "setup" / "指点江山_Setup.exe"
     dst = OUT_DIR / SETUP_EXE_NAME
     if dst.exists():
         dst.unlink()
@@ -72,11 +72,11 @@ def make_portable():
     with zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
         for p in sorted(APP_DIR.rglob("*")):
             if p.is_file():
-                z.write(p, ("KeyHint/" + p.relative_to(APP_DIR).as_posix()))
-        z.writestr("KeyHint/双击运行说明.txt",
-                   "解压后双击 KeyHint.exe 即可运行，无需安装、无需 Python。\n"
+                z.write(p, ("指点江山/" + p.relative_to(APP_DIR).as_posix()))
+        z.writestr("指点江山/双击运行说明.txt",
+                   "解压后双击 指点江山.exe 即可运行，无需安装、无需 Python。\n"
                    "程序会在系统托盘驻留，按住 Ctrl / Shift / Alt / Win 呼出虚拟键盘。\n"
-                   "配置保存在 %APPDATA%\\KeyHint\\config.json。\n")
+                   "配置保存在 %APPDATA%\\指点江山\\config.json。\n")
     print("绿色版: %s (%.1f MB)" % (dst, dst.stat().st_size / 1048576))
 
 

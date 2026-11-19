@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-KeyHint · 情境式指令提示（PC 移植版）
+指点江山 · 情境式指令提示（PC 移植版）
 =====================================
 把 HUAWEI MateBook Fold 虚拟键盘的「长按辅助键 -> 全键盘亮起可用组合键并显示指令」
 搬到任意 Windows 电脑上：一个常驻系统托盘的小插件，按住 Ctrl / Shift / Alt / Win
@@ -16,6 +16,7 @@ KeyHint · 情境式指令提示（PC 移植版）
 
 from __future__ import annotations
 
+import copy
 import ctypes as C
 import json
 import os
@@ -35,17 +36,40 @@ import settings_ui
 import controlbar
 from layout import canonical
 
+# ---------------------------------------------------------------- 应用标识
+APP_NAME = "指点江山"
+APP_VERSION = "4.12"
+
+# v4.10：Unicode 专用上标字符 → 普通半角字符映射。
+# WPS/Word 里这些专用字符会 fallback 到全角字体、占位很大；检测到 Office 时
+# 改用「普通字符 + 真上标格式」（Ctrl+Shift+=）输入，显示与排版都正常。
+_SUPER_TO_PLAIN = {
+    "⁰": "0", "¹": "1", "²": "2", "³": "3", "⁴": "4",
+    "⁵": "5", "⁶": "6", "⁷": "7", "⁸": "8", "⁹": "9",
+    "⁺": "+", "⁻": "-", "⁼": "=", "⁽": "(", "⁾": ")",
+}
+_OFFICE_EXES = ("wps", "winword", "word.exe", "et.exe", "wpp",
+                "excel", "powerpnt", "soffice", "swriter", "scalc")
+
 # ---------------------------------------------------------------- 运行路径
 # 源码运行时：所有文件都在脚本目录。
 # 打包成安装版后：程序安装在用户目录（可能是只读的 Program Files），
-# 配置必须放到 %APPDATA%\KeyHint，否则托盘里的设置无法保存。
+# 配置必须放到 %APPDATA%\指点江山，否则托盘里的设置无法保存。
 IS_FROZEN = bool(getattr(sys, "frozen", False))
 if IS_FROZEN:
     BUNDLE_DIR = Path(sys.executable).resolve().parent
     RES_DIR = Path(getattr(sys, "_MEIPASS", str(BUNDLE_DIR)))
-    DATA_DIR = Path(os.environ.get("APPDATA") or str(BUNDLE_DIR)) / "KeyHint"
+    _appdata = Path(os.environ.get("APPDATA") or str(BUNDLE_DIR))
+    DATA_DIR = _appdata / APP_NAME
     try:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
+        # 从旧版 KeyHint 目录迁移配置，避免改名后丢失用户设置
+        _old_dir = _appdata / "KeyHint"
+        _new_cfg = DATA_DIR / "config.json"
+        _old_cfg = _old_dir / "config.json"
+        if _old_cfg.exists() and not _new_cfg.exists():
+            import shutil as _sh
+            _sh.copy2(str(_old_cfg), str(_new_cfg))
     except Exception:
         DATA_DIR = BUNDLE_DIR
 else:
@@ -77,9 +101,9 @@ if sys.stderr is None:
 DEFAULT_CONFIG = {
     "enabled": True,
     "delay_ms": 0,          # v4.04：默认立即弹出（0 = 同步弹出，无定时器粒度延迟）
-    "opacity": 92,
+    "opacity": 80,          # v4.09：默认背景透明度 80%（键帽始终不透明）
     "fade": True,           # 半透明显示总开关；False = 100% 不透明
-    "mouse_click": False,   # True = 虚拟键帽可点击；False = 鼠标完全穿透
+    "mouse_click": True,    # v4.11：默认键帽可点，行为区四项默认全开
     "click_keep": True,     # 点击执行后保持面板（隐藏倒计时重新计时）
     "ui_grace_ms": 1500,    # 操作右上角控件时的最短保留时间
     "hide_delay_ms": 0,     # 松开辅助键后延时消失：0=立即，5000/10000=5/10 秒
@@ -88,23 +112,28 @@ DEFAULT_CONFIG = {
     "hint_mode": "icon",
     "theme": "dark",
     "wallpaper_theme": True,
-    "position": "bottom",
-    "sound": False,
+    "position": "top",       # v4.11：默认停靠屏幕顶部
+    "sound": True,           # v4.11：指令显示区默认全开
     "app_context": True,
     "show_lang": True,
     "modifiers": {"Ctrl": True, "Shift": True, "Alt": True, "Win": True},
     "custom_shortcuts": {},
+    # v4.11：自定义快捷键面板（可创建多套、自定义名称；右键键帽编辑）
+    "custom_panels": [{"name": "我的快捷键", "keys": {}}],
+    "active_custom_panel": 0,
+    "custom_active": False,
     # v4.01 新增
     "popup_enabled": True,      # False = 按住辅助键不再强制弹出虚拟键盘
     "toggle_hotkey": "Ctrl+Esc",  # 开启 / 关闭弹出的快捷开关，可自定义
-    "kb_scale": 1.0,            # 键盘缩放倍率（0.6 ~ 2.4）
+    "kb_scale": 1.0,            # 键盘缩放倍率（v4.11：0.5 ~ 2.0）
     "kb_pos_x": None,           # 自定义左上角坐标；None = 沿用「停靠底部 / 居中」
     "kb_pos_y": None,
     # v4.02 新增
     "font_scale": 1.0,          # 键帽字体倍率（0.5 ~ 2.0；1.0 = v4.00 原始字号）
     # v4.04：已移除「自动避开光标」，位置 / 大小在键帽开关两态完全一致
     # v4.07：常驻任务栏 / 开机自启动
-    "taskbar_dock": True,       # True = 任务栏常驻按钮 + 托盘图标锁定显示
+    # v4.08：默认关闭任务栏常驻按钮，仅保留系统托盘图标
+    "taskbar_dock": False,      # True = 任务栏常驻按钮；False = 仅托盘显示（默认）
     "autostart": True,          # True = 写 HKCU Run，开机自启（安装器已写，这里做镜像）
 }
 
@@ -156,8 +185,7 @@ def sid_to_vk(sid: str) -> int:
 
 # ---------------------------------------------------------------- 配置
 def load_config() -> dict:
-    cfg = dict(DEFAULT_CONFIG)
-    cfg["modifiers"] = dict(DEFAULT_CONFIG["modifiers"])
+    cfg = copy.deepcopy(DEFAULT_CONFIG)
     # 安装版首次运行：把随程序分发的默认配置复制一份到用户配置目录
     if IS_FROZEN and not CONFIG_PATH.exists() and DEFAULT_CONFIG_PATH.exists():
         try:
@@ -172,6 +200,21 @@ def load_config() -> dict:
             cfg["modifiers"] = {**DEFAULT_CONFIG["modifiers"], **(raw.get("modifiers") or {})}
         except Exception as e:
             print("config.json 读取失败，使用默认配置：", e)
+    # v4.11：自定义面板结构容错，避免旧配置 / 手工编辑导致界面崩溃
+    panels = cfg.get("custom_panels")
+    if not isinstance(panels, list) or not panels:
+        panels = [{"name": "我的快捷键", "keys": {}}]
+    clean = []
+    for p in panels:
+        if not isinstance(p, dict):
+            continue
+        keys = p.get("keys")
+        clean.append({"name": str(p.get("name") or "自定义面板"),
+                      "keys": keys if isinstance(keys, dict) else {}})
+    cfg["custom_panels"] = clean or [{"name": "我的快捷键", "keys": {}}]
+    idx = cfg.get("active_custom_panel", 0)
+    if not isinstance(idx, int) or not (0 <= idx < len(cfg["custom_panels"])):
+        cfg["active_custom_panel"] = 0
     return cfg
 
 
@@ -202,6 +245,7 @@ def ensure_icon() -> str:
 
 # ---------------------------------------------------------------- 菜单 ID
 ID_ENABLE, ID_LOCK, ID_DEMO, ID_RELOAD, ID_OPENCFG, ID_ABOUT, ID_EXIT = 100, 101, 102, 103, 104, 105, 199
+ID_SETTINGS = 108
 ID_STYLE_COMPACT, ID_STYLE_FULL = 201, 202
 ID_HINT_ICON, ID_HINT_TEXT = 211, 212
 ID_MOD_CTRL, ID_MOD_SHIFT, ID_MOD_ALT, ID_MOD_WIN = 221, 222, 223, 224
@@ -238,6 +282,8 @@ FONT_SCALE_MAP = {ID_FONT_90: 0.9, ID_FONT_100: 1.0, ID_FONT_110: 1.1,
 _MOD_NAMES = {"CTRL": "Ctrl", "SHIFT": "Shift", "ALT": "Alt", "WIN": "Win"}
 # v4.07：常驻任务栏 / 开机自启动
 ID_TASKBAR_DOCK, ID_AUTOSTART = 601, 602
+# v4.11：虚拟键帽右键菜单——自定义快捷键
+ID_CUSTOM_EDIT_KEY, ID_CUSTOM_MANAGE, ID_CUSTOM_TRAY_MENU = 701, 702, 703
 _RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 _RUN_VALUE = "KeyHint"
 
@@ -335,27 +381,45 @@ class KeyHintApp:
         self._base_image = None
         self._blit_xy = (0, 0)
         self._rendered_hover = None
+        self._rendered_hover_action = ""
+        self._right_click_sid = None
         self._cache = None
         self._demo_timer = False
         self._settings_preview = False
         self._bar_grace = False           # 正在操作右上角控件 → 短暂保留面板
         self._kb_drag = None              # v4.01：顶栏移动 / 右下角缩放的拖拽状态
         self.header_h = 40                # 顶栏高度，refresh 时用真实值覆盖
+        # v4.08：特殊符号页（独立于普通键盘画面，点击即输入 Unicode 符号）
+        self.symbol_mode = False          # 是否处于符号页
+        self.symbol_cat = 0               # 当前分类索引
+        self.symbol_cells: list = []      # 与画面严格同源的格子几何
+        self._symbol_base = None          # 符号页底图缓存
+        self._mouse_click_before_symbols = None  # 进入符号页前的点击模式，退出时恢复
+        # v4.08 修复：符号页点击时记住「真正要输入到的窗口」，注入前恢复其焦点。
+        # 点击 WS_EX_NOACTIVATE 的分层窗口会让系统把焦点切走，导致 Unicode
+        # 字符发给错误窗口（乱码/无输入）。
+        self._symbol_target_hwnd = 0
+        # v4.08：符号延迟注入队列——点击发生在鼠标消息过程内，立刻 SendInput
+        # 会与焦点切换 / 鼠标状态交织导致字符丢失。排到 timer 6 注入更稳。
+        self._pending_symbol = None
 
         self.overlay = w.LayeredWindow(on_mouse=self._overlay_mouse)
         self._wndproc = w.WNDPROC(self._wndproc_impl)
         self.hwnd = w.create_message_window("KeyHintMain", "KeyHint", self._wndproc)
         # v4.07：任务栏常驻按钮（与消息窗口共用 KeyHintMain 窗口类/WNDPROC）
         self.taskbar_hwnd = 0
-        if self.cfg.get("taskbar_dock", True):
+        # v4.09：用户要求图标只留在托盘、绝不出现在任务栏。
+        # 旧配置里 taskbar_dock=true 的，启动时强制纠正为 False 并回写，
+        # 且不再创建任务栏代理窗口（即使配置残留 true 也不生效）。
+        if self.cfg.get("taskbar_dock", False):
+            self.cfg["taskbar_dock"] = False
             try:
-                self.taskbar_hwnd = w.create_taskbar_window(
-                    "KeyHintMain", "KeyHint · 情境式指令提示", str(ICON_PATH))
-            except Exception as e:
-                print("任务栏按钮创建失败：", e)
-        self.tray = w.TrayIcon(self.hwnd, ensure_icon(), "KeyHint · 情境式指令提示\n右键打开设置")
-        if self.cfg.get("taskbar_dock", True):
-            w.user32.SetTimer(self.hwnd, 7, 30000, None)  # 托盘图标保活
+                save_config(self.cfg)
+            except Exception:
+                pass
+        self.tray = w.TrayIcon(self.hwnd, ensure_icon(), "%s · 情境式指令提示\n右键打开设置" % APP_NAME)
+        # v4.08：托盘保活独立于任务栏开关——即使不开任务栏按钮，托盘图标也要常驻
+        w.user32.SetTimer(self.hwnd, 7, 30000, None)  # 托盘图标保活
         self.hook = w.KeyboardHook(self.hwnd, w.WM_APP + 1,
                                    swallow=self._swallow_hotkey)
         self.hook.start()
@@ -369,7 +433,10 @@ class KeyHintApp:
             on_opacity=lambda v: self.set_opacity(v, True),
             on_commit=lambda: save_config(self.cfg),
             on_activity=self.note_bar_activity,
-            on_cycle_delay=self.cycle_hide_delay_from_bar)
+            on_cycle_delay=self.cycle_hide_delay_from_bar,
+            on_toggle_symbols=self.toggle_symbols_from_bar,
+            on_cycle_custom=self.cycle_custom_panel_from_bar,
+            on_manage_custom=self.open_custom_panel_manager)
 
         self.op_dialog = settings_ui.OpacityDialog(
             lambda: (self.cfg.get("opacity", 92), self.cfg.get("fade", True)),
@@ -382,6 +449,14 @@ class KeyHintApp:
         self.font_dialog = settings_ui.FontDialog(
             lambda: self.cfg.get("font_scale", 1.0),
             self.set_font_scale, self.on_font_close)
+        # v4.09：统一设置窗口（收纳右键菜单的全部调节项）
+        self.settings_dialog = settings_ui.SettingsDialog(
+            lambda: self.cfg, self.apply_settings, self.on_settings_close,
+            title="%s · 设置" % APP_NAME,
+            on_custom=self.open_custom_panel_manager)
+        # v4.11：自定义 GUI 对话框保活引用
+        self.custom_key_dialog = None
+        self.custom_panel_dialog = None
 
         # 首次启动提示
         if cfg.get("enabled"):
@@ -400,7 +475,7 @@ class KeyHintApp:
         try:
             if self.cfg.get("wallpaper_theme", True):
                 render.wallpaper_accent()
-            scale = max(0.55, min(2.4, float(self.cfg.get("kb_scale", 1.0) or 1.0)))
+            scale = max(0.5, min(2.0, float(self.cfg.get("kb_scale", 1.0) or 1.0)))
             _, cw, ch, _, _ = layout.build(
                 self.cfg["layout"], self.cfg["narrow"], self.sw, scale)
             accent = (render.wallpaper_accent()
@@ -414,12 +489,127 @@ class KeyHintApp:
             pass
 
     def bar_state(self) -> dict:
-        return {"mouse_click": self.cfg.get("mouse_click", False),
+        return {"mouse_click": self.cfg.get("mouse_click", True),
                 "fade": self.cfg.get("fade", True),
-                "opacity": self.cfg.get("opacity", 92),
+                "opacity": self.cfg.get("opacity", 80),
                 "hide_delay_ms": self.hide_delay(),
                 "theme": self.cfg.get("theme", "dark"),
-                "wallpaper_theme": self.cfg.get("wallpaper_theme", True)}
+                "wallpaper_theme": self.cfg.get("wallpaper_theme", True),
+                "symbol_mode": self.symbol_mode,
+                "custom_active": self.custom_active(),
+                "custom_label": self.custom_panel_name()}
+
+    # ------------------------------------------------------------ v4.11 自定义面板
+    def custom_active(self) -> bool:
+        return bool(self.cfg.get("custom_active", False))
+
+    def custom_panels(self) -> list:
+        panels = self.cfg.get("custom_panels")
+        if not isinstance(panels, list) or not panels:
+            panels = [{"name": "我的快捷键", "keys": {}}]
+            self.cfg["custom_panels"] = panels
+        return panels
+
+    def current_custom_panel(self) -> dict:
+        panels = self.custom_panels()
+        idx = self.cfg.get("active_custom_panel", 0)
+        if not isinstance(idx, int) or not (0 <= idx < len(panels)):
+            idx = 0
+            self.cfg["active_custom_panel"] = 0
+        p = panels[idx]
+        if not isinstance(p, dict):
+            p = {"name": "我的快捷键", "keys": {}}
+            panels[idx] = p
+        if not isinstance(p.get("keys"), dict):
+            p["keys"] = {}
+        return p
+
+    def custom_panel_name(self) -> str:
+        return str(self.current_custom_panel().get("name") or "自定义")
+
+    def custom_key_entry(self, sid: str) -> dict | None:
+        sid = canonical(str(sid or ""))
+        entry = self.current_custom_panel().get("keys", {}).get(sid)
+        return entry if isinstance(entry, dict) else None
+
+    def cycle_custom_panel_from_bar(self):
+        """v4.12：左键点击「我的快捷键」= 开关切换。
+        开 → 全灰自定义面板（所有快捷键需自定义）；关 → 恢复常用快捷键面板。"""
+        if self.custom_active():
+            self.cfg["custom_active"] = False
+            self._balloon("我的快捷键", "已关闭，恢复常用快捷键面板。")
+        else:
+            self.cfg["custom_active"] = True
+            self._balloon("我的快捷键", "已开启：%s。所有键位全灰，右键任意键帽自定义。"
+                          % self.custom_panel_name())
+        save_config(self.cfg)
+        self._cache = None
+        if self.visible:
+            self.refresh(force=True)
+        self.controlbar.refresh(force=True)
+
+    def open_custom_key_editor(self, sid: str, x: int, y: int):
+        """右键虚拟键帽：直接打开当前键的组合键 / 名称 / 作用编辑器。"""
+        sid = canonical(str(sid or ""))
+        if not sid or sid.startswith(("CAT:", "SYM:")):
+            return
+        if not self.custom_active():
+            self.cfg["custom_active"] = True
+        entry = dict(self.custom_key_entry(sid) or {})
+
+        def get_entry():
+            return entry
+
+        def save(entry_data):
+            panel = self.current_custom_panel()
+            if entry_data:
+                panel.setdefault("keys", {})[sid] = entry_data
+            else:
+                panel.setdefault("keys", {}).pop(sid, None)
+            save_config(self.cfg)
+            self._cache = None
+            if self.visible:
+                self.refresh(force=True)
+
+        def delete():
+            self.current_custom_panel().setdefault("keys", {}).pop(sid, None)
+            save_config(self.cfg)
+            self._cache = None
+            if self.visible:
+                self.refresh(force=True)
+
+        self.custom_key_dialog = settings_ui.CustomKeyDialog(
+            get_entry, sid, save, delete, self.on_custom_key_close)
+        self.custom_key_dialog.show(x, y)
+        self.note_bar_activity()
+
+    def on_custom_key_close(self):
+        self.custom_key_dialog = None
+        self.controlbar.refresh(force=True)
+
+    def open_custom_panel_manager(self):
+        def get_panels():
+            return self.custom_panels()
+
+        def apply(panels, active_idx):
+            self.cfg["custom_panels"] = panels
+            self.cfg["active_custom_panel"] = active_idx
+            self.cfg["custom_active"] = True
+            save_config(self.cfg)
+            self._cache = None
+            if self.visible:
+                self.refresh(force=True)
+            self.controlbar.refresh(force=True)
+
+        self.custom_panel_dialog = settings_ui.CustomPanelDialog(
+            get_panels, int(self.cfg.get("active_custom_panel", 0) or 0),
+            apply, self.on_custom_panel_close)
+        self.custom_panel_dialog.show()
+        self.note_bar_activity()
+
+    def on_custom_panel_close(self):
+        self.custom_panel_dialog = None
+        self.controlbar.refresh(force=True)
 
     # ------------------------------------------------------------ v4.01 弹出开关
     def _hotkey_parts(self):
@@ -442,16 +632,14 @@ class KeyHintApp:
         try:
             if on and not self.taskbar_hwnd:
                 self.taskbar_hwnd = w.create_taskbar_window(
-                    "KeyHintMain", "KeyHint · 情境式指令提示", str(ICON_PATH))
+                    "KeyHintMain", "%s · 情境式指令提示" % APP_NAME, str(ICON_PATH))
             elif not on and self.taskbar_hwnd:
                 w.taskbar_destroy(self.taskbar_hwnd)
                 self.taskbar_hwnd = 0
         except Exception as e:
             print("任务栏按钮切换失败：", e)
-        if on:
-            w.user32.SetTimer(self.hwnd, 7, 30000, None)
-        else:
-            w.user32.KillTimer(self.hwnd, 7)
+        # v4.08：托盘保活始终开启，不再随任务栏开关关闭
+        w.user32.SetTimer(self.hwnd, 7, 30000, None)
         self.cfg["taskbar_dock"] = on
         save_config(self.cfg)
         self._balloon("常驻任务栏", "已开启：任务栏出现按钮，点击可弹出菜单。" if on else
@@ -462,7 +650,7 @@ class KeyHintApp:
         set_autostart(on)
         self.cfg["autostart"] = on
         save_config(self.cfg)
-        self._balloon("开机自启动", "已开启：下次开机会自动运行 KeyHint。" if on else
+        self._balloon("开机自启动", "已开启：下次开机会自动运行 %s。" % APP_NAME if on else
                       "已关闭：下次开机不再自动运行。")
 
     def popup_enabled(self) -> bool:
@@ -496,7 +684,7 @@ class KeyHintApp:
 
     # ------------------------------------------------------------ v4.01 键盘几何
     def set_kb_scale(self, scale):
-        self.cfg["kb_scale"] = max(0.6, min(2.4, float(scale)))
+        self.cfg["kb_scale"] = max(0.5, min(2.0, float(scale)))
         self._cache = None
         save_config(self.cfg)
         if self.visible:
@@ -524,6 +712,47 @@ class KeyHintApp:
 
     def on_font_close(self):
         save_config(self.cfg)
+
+    # ------------------------------------------------------------ v4.09 统一设置窗口
+    def open_settings(self):
+        """打开统一设置窗口：先确保面板可见，便于实时预览外观变化。"""
+        self._settings_preview = True
+        if not self.visible:
+            self.detect_context()
+            self.combo = self.current_combo() or "Ctrl"
+            self.visible = True
+            self.refresh(force=True)
+        self.settings_dialog.show()
+
+    def apply_settings(self, new_cfg):
+        """把设置窗口返回的配置一次性应用（含各类副作用）并保存。"""
+        old = self.cfg
+        taskbar_changed = bool(new_cfg.get("taskbar_dock")) != bool(self.taskbar_hwnd)
+        autostart_new = bool(new_cfg.get("autostart"))
+        autostart_changed = autostart_new != autostart_enabled()
+
+        # 更新配置本体（保留运行时字段）
+        for k, v in new_cfg.items():
+            old[k] = v
+        old["screen_w"], old["screen_h"] = self.sw, self.sh
+
+        # 点击穿透 / 缓存
+        self.overlay.set_click_through(not self.mouse_mode())
+        self._cache = None
+        # 任务栏 / 自启
+        if taskbar_changed:
+            self.set_taskbar_dock(bool(new_cfg.get("taskbar_dock")))
+        if autostart_changed:
+            set_autostart(autostart_new)
+        save_config(old)
+        if self.visible:
+            self.refresh(force=True)
+
+    def on_settings_close(self):
+        self._settings_preview = False
+        save_config(self.cfg)
+        if not self.locked and not self.held and not self.symbol_mode:
+            self.schedule_hide()
 
     # ------------------------------------------------------------ 延时消失
     def hide_delay(self) -> int:
@@ -632,141 +861,21 @@ class KeyHintApp:
             pass
 
     def menu_items(self):
+        """v4.09：极简右键菜单——所有调节项收进「设置」窗口。"""
         c = self.cfg
-        mods = c["modifiers"]
-        ms = max(0, int(c.get("hide_delay_ms", 0) or 0))
-        hk = c.get("toggle_hotkey", "Ctrl+Esc")
-        scale_pct = int(round(float(c.get("kb_scale", 1.0) or 1.0) * 100))
-        font_pct = int(round(float(c.get("font_scale", 1.0) or 1.0) * 100))
         return [
-            chk(ID_ENABLE, "启用情境式指令提示" + ("" if c["enabled"] else "（已停用）"), c["enabled"]),
+            ("info", "%s  v%s" % (APP_NAME, APP_VERSION)),
             ("sep",),
-            chk(ID_TASKBAR_DOCK, "常驻任务栏（任务栏图标 + 托盘锁定显示）",
-                bool(self.taskbar_hwnd)),
-            chk(ID_AUTOSTART, "开机自启动", autostart_enabled()),
-            ("sep",),
-            chk(ID_POPUP_ENABLE, "按住辅助键弹出虚拟键盘  %s 开关" % hk,
-                self.popup_enabled()),
-            ("menu", "弹出开关快捷键（当前 %s）" % hk, [
-                chk(ID_HK_CTRL_ESC, "Ctrl+Esc（推荐，已拦截开始菜单）", hk == "Ctrl+Esc"),
-                chk(ID_HK_CTRL_ALT_P, "Ctrl+Alt+P", hk == "Ctrl+Alt+P"),
-                chk(ID_HK_CTRL_ALT_K, "Ctrl+Alt+K", hk == "Ctrl+Alt+K"),
-                ("sep",),
-                (ID_HK_CUSTOM, "自定义组合键…", False, True),
-                ("info", "关闭弹出后仍可用 Ctrl+Alt+H 或托盘手动打开"),
-            ]),
-            chk(ID_MOUSE_CLICK, "鼠标可点击键帽（关闭＝鼠标穿透）", c["mouse_click"]),
-            chk(ID_FADE, "半透明显示（可调）", c["fade"]),
+            chk(ID_ENABLE, "启用" + ("" if c["enabled"] else "（当前已停用）"), c["enabled"]),
+            (ID_SETTINGS, "设置…   外观 / 行为 / 快捷键 / 键盘规格", False, True),
             chk(ID_LOCK, "锁定速查面板  Ctrl+Alt+H", self.locked),
             ("sep",),
-            ("info", "★ 键帽可点时：拖顶栏移动 / 拖右下角缩放"),
-            ("info", "★ 键盘右上角：键帽可点 / 延时消失 / 透明度滑杆"),
-            (ID_OP_DIALOG, "透明度调节…  独立滑块窗口（备用）", False, True),
-            ("menu", "松手后延时消失", [
-                ("info", "当前：%s" % render.delay_label(ms)),
-                ("sep",),
-                chk(ID_HIDE_0, "立即消失（松手即隐）", ms == 0),
-                chk(ID_HIDE_3, "3 秒后消失", ms == 3000),
-                chk(ID_HIDE_5, "5 秒后消失", ms == 5000),
-                chk(ID_HIDE_10, "10 秒后消失", ms == 10000),
-                chk(ID_HIDE_15, "15 秒后消失", ms == 15000),
-                chk(ID_HIDE_30, "30 秒后消失", ms == 30000),
-                ("sep",),
-                (ID_HIDE_CUSTOM, "自定义秒数…（支持 2.5 这类小数）", False, True),
-                ("info", "控件条上点档位胶囊：立即 → 5s → 10s 循环"),
-                ("info", "延时期间点键帽 / 拖滑杆会重新计时，Esc 立即收起"),
-                ("info", "也可直接改 config.json 的 hide_delay_ms"),
-            ]),
-            ("menu", "鼠标点击选项", [
-                chk(ID_MOUSE_CLICK, "允许鼠标点击虚拟键帽", c["mouse_click"]),
-                ("info", "关闭后：鼠标完全穿透，可点选下层文字 / 文件"),
-                ("info", "松手后何时消失，由上面的延时设置统一控制"),
-                ("sep",),
-                chk(ID_CLICK_KEEP, "执行后保持面板（可连续点击）", c["click_keep"]),
-                ("info", "点击 Ctrl/Shift/Alt/Win 键帽可切换组合"),
-                ("info", "右上角开关 / Ctrl+Alt+M 均可切换"),
-            ]),
+            (ID_DEMO, "预览 3 秒", False, True),
+            # v4.09：移除「编辑指令数据库 / 配置…」——它用记事本打开 JSON 代码，
+            # 新手容易改坏。所有可调项已收进「设置」窗口的 GUI。
+            (ID_ABOUT, "关于", False, True),
             ("sep",),
-            ("menu", "键盘规格", [
-                chk(ID_STYLE_COMPACT, "悬浮紧凑键盘（折叠态全键盘）", c["layout"] == "compact"),
-                chk(ID_STYLE_FULL, "全尺寸 104 键（含数字键盘）", c["layout"] == "full"),
-                ("sep",),
-                chk(ID_NARROW, "窄距键帽", c["narrow"]),
-                ("sep",),
-                ("info", "位置 / 大小：键帽可点开启后拖顶栏移动、拖右下角缩放"),
-                ("info", "开关两态共用同一位置与大小，切换不跳位"),
-                chk(ID_POS_BOTTOM, "停靠屏幕底部（未自定义位置时）", c["position"] == "bottom"),
-                chk(ID_POS_CENTER, "旧·屏幕居中", c["position"] == "center"),
-                ("sep",),
-                ("menu", "键盘缩放（当前 %d%%）" % scale_pct, [
-                    chk(ID_KB_SCALE_80, "80%", scale_pct == 80),
-                    chk(ID_KB_SCALE_100, "100%（默认）", scale_pct == 100),
-                    chk(ID_KB_SCALE_125, "125%", scale_pct == 125),
-                    chk(ID_KB_SCALE_150, "150%", scale_pct == 150),
-                    ("info", "键帽可点时可直接拖键盘右下角连续缩放"),
-                ]),
-                ("menu", "字体大小（当前 %d%%）" % font_pct, [
-                    chk(ID_FONT_90, "90%  稍小", font_pct == 90),
-                    chk(ID_FONT_100, "100%（原始默认）", font_pct == 100),
-                    chk(ID_FONT_110, "110%", font_pct == 110),
-                    chk(ID_FONT_125, "125%", font_pct == 125),
-                    chk(ID_FONT_150, "150%", font_pct == 150),
-                    ("sep",),
-                    (ID_FONT_CUSTOM, "自定义 50%~200%…", False, True),
-                    ("info", "只改键帽文字；过大可能截断，整体大小请用上面的缩放"),
-                ]),
-                (ID_KB_RESET, "重置键盘大小与位置", False, True),
-            ]),
-            ("menu", "指令显示", [
-                chk(ID_HINT_ICON, "符号 + 指令（华为推荐）", c["hint_mode"] == "icon"),
-                chk(ID_HINT_TEXT, "纯文本指令", c["hint_mode"] == "text"),
-                ("sep",),
-                chk(ID_CONTEXT, "应用情境感知（按前台软件切换）", c["app_context"]),
-                chk(ID_LANG, "显示当前输入语言键帽", c["show_lang"]),
-                chk(ID_SOUND, "按键反馈音", c["sound"]),
-            ]),
-            ("menu", "触发的辅助键", [
-                chk(ID_MOD_CTRL, "Ctrl", mods.get("Ctrl", True)),
-                chk(ID_MOD_SHIFT, "Shift", mods.get("Shift", True)),
-                chk(ID_MOD_ALT, "Alt", mods.get("Alt", True)),
-                chk(ID_MOD_WIN, "Win", mods.get("Win", True)),
-                ("sep",),
-                ("menu", "唤起延迟", [
-                    chk(ID_DELAY_0, "立即（推荐）", c["delay_ms"] == 0),
-                    chk(ID_DELAY_150, "150 ms", c["delay_ms"] == 150),
-                    chk(ID_DELAY_300, "300 ms", c["delay_ms"] == 300),
-                    chk(ID_DELAY_500, "500 ms", c["delay_ms"] == 500),
-                ]),
-            ]),
-            ("menu", "外观主题", [
-                chk(ID_THEME_DARK, "深色玻璃", c["theme"] == "dark"),
-                chk(ID_THEME_LIGHT, "浅色玻璃", c["theme"] == "light"),
-                chk(ID_THEME_AUTO, "跟随系统深浅色", c["theme"] == "auto"),
-                ("sep",),
-                chk(ID_THEME_WALL, "壁纸联动强调色", c["wallpaper_theme"]),
-                ("sep",),
-                ("menu", "透明度", [
-                    (ID_OP_DIALOG, "滑块细调…（10% ~ 100%）", False, True),
-                    ("info", "半透明开关：%s ／ 当前 %d%%"
-                     % ("开" if c["fade"] else "关（不透明）", c["opacity"])),
-                    ("sep",),
-                    (ID_OP_PLUS, "更浓  +5%", False, True),
-                    (ID_OP_MINUS, "更淡  -5%", False, True),
-                    ("sep",),
-                    chk(ID_OP_100, "100%  不透明", c["opacity"] == 100),
-                    chk(ID_OP_92, "92%   默认", c["opacity"] == 92),
-                    chk(ID_OP_78, "78%", c["opacity"] == 78),
-                    chk(ID_OP_60, "60%", c["opacity"] == 60),
-                    chk(ID_OP_40, "40%  极淡", c["opacity"] == 40),
-                ]),
-            ]),
-            ("sep",),
-            (ID_DEMO, "预览 3 秒（Ctrl + 当前应用）", False, True),
-            (ID_OPENCFG, "编辑指令数据库 / 配置…", False, True),
-            (ID_RELOAD, "重新加载配置", False, True),
-            (ID_ABOUT, "关于 · 华为功能移植对照", False, True),
-            ("sep",),
-            (ID_EXIT, "退出 KeyHint", False, True),
+            (ID_EXIT, "退出 %s" % APP_NAME, False, True),
         ]
 
     def handle_cmd(self, cmd):
@@ -863,12 +972,15 @@ class KeyHintApp:
             except Exception:
                 pass
             return
+        elif cmd == ID_SETTINGS:
+            self.open_settings()
+            return
         elif cmd == ID_ABOUT:
-            lines = ["KeyHint · 情境式指令提示（PC 移植）", ""]
+            lines = ["%s  v%s" % (APP_NAME, APP_VERSION), "情境式指令提示（PC 移植）", ""]
             lines += ["✓ " + a + "\n   → " + b for a, b in shortcuts.HUAWEI_FEATURE_MAP[:6]]
             try:
                 C.windll.user32.MessageBoxW(0, "\n".join(lines)[:1500],
-                                            "关于 KeyHint", 0x40)
+                                            "关于 %s" % APP_NAME, 0x40)
             except Exception:
                 pass
             return
@@ -951,6 +1063,10 @@ class KeyHintApp:
         w.user32.KillTimer(self.hwnd, 5)
 
     def toggle_lock(self):
+        # v4.08：符号页本身就是锁定态，Ctrl+Alt+H 直接视为退出符号页
+        if self.symbol_mode:
+            self.close_symbols()
+            return
         self.locked = not self.locked
         if self.locked:
             if not self.combo:
@@ -961,6 +1077,11 @@ class KeyHintApp:
             self.refresh(force=True)
         else:
             self.hide()
+
+    def toggle_symbols_from_bar(self):
+        """控件条「符号页」按钮：切换符号页；首次打开时若面板未显示则先显示。"""
+        self.toggle_symbols(from_bar=True)
+        self.note_bar_activity()
 
     # ------------------------------------------------------------ 两个新开关
     def set_mouse_click(self, on: bool, from_bar: bool = False):
@@ -1040,12 +1161,63 @@ class KeyHintApp:
         w.user32.KillTimer(self.hwnd, 3)
         w.user32.SetTimer(self.hwnd, 3, seconds * 1000, None)
 
+    def _refresh_symbols(self, force=False):
+        """v4.08：符号页刷新——与键盘渲染分流，共用 overlay / 控件条 / 悬停叠加。"""
+        import symbol_render as symr
+        key = (self.symbol_cat, self.cfg.get("theme", "dark"),
+               self.cfg.get("wallpaper_theme", True),
+               self.cfg.get("opacity", 92), self.cfg.get("fade", True),
+               self.cfg.get("kb_scale", 1.0), self.cfg.get("font_scale", 1.0),
+               self.cfg.get("kb_pos_x"), self.cfg.get("kb_pos_y"),
+               self.cfg.get("position", "bottom"), self.flash_sid)
+        hover = self.hover_sid
+        full = force or key != self._cache
+        if not full and hover == self._rendered_hover:
+            return
+        if full:
+            self._cache = key
+            try:
+                im, x, y, cells = symr.render_image(
+                    self.cfg, self.symbol_cat, hover, self.flash_sid)
+                self._symbol_base = im
+                self.symbol_cells = cells
+                self._blit_xy = (x, y)
+                self.overlay.set_click_through(not self.mouse_mode())
+                self.hit_keys = []          # 符号页不用键盘 hit_keys
+                self.controlbar.place(x, y, im.width, im.height, self.sw)
+            except Exception as e:
+                print("符号页渲染失败：", e)
+                return
+        if self._symbol_base is None:
+            return
+        out = self._symbol_base.copy()
+        symr.draw_hover(out, self.symbol_cells, hover, self.flash_sid)
+        # v4.08：透明度只作用于面板背景（render_image 内处理），键帽恒不透明
+        data = render.to_premultiplied_bgra(out, 100)
+        self._rendered_hover = hover
+        self.overlay.blit(data, out.width, out.height, *self._blit_xy)
+
     def refresh(self, force=False):
         if not self.visible:
+            return
+        if self.symbol_mode:
+            self._refresh_symbols(force)
             return
         combo = self.current_combo()
         self.combo = combo
         mapping = shortcuts.resolve(combo, self.app_key, self.cfg.get("custom_shortcuts"))
+        app_name = shortcuts.app_display_name(self.app_key)
+        if self.custom_active():
+            # v4.12：开启自定义后整块键盘全灰，不显示任何内置快捷键；
+            # 只有用户亲自右键设置过的键帽才显示名称、才可点击执行。
+            mapping = {}
+            for sid, item in self.current_custom_panel().get("keys", {}).items():
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name") or "").strip()
+                if name:
+                    mapping[canonical(sid)] = name
+            app_name = "我的快捷键：%s" % self.custom_panel_name()
         lang = w.input_language() if self.cfg["show_lang"] else ""
         # v4.04：hover_sid 不进缓存键——悬停只在缓存底图上叠加描边，
         # 不再整幅重绘（原来每次鼠标跨键帽都要重画几百个键 + 高斯模糊 + 壁纸取色）。
@@ -1059,19 +1231,31 @@ class KeyHintApp:
                # v4.06：快捷键/开关状态变化时强制重绘底部提示胶囊
                self.cfg.get("toggle_hotkey", "Ctrl+Esc"),
                self.cfg.get("popup_enabled", True),
+               self.custom_active(), self.custom_panel_name(),
                self.hide_delay(), tuple(sorted(self.current_mods())))
         hover = self.hover_sid
-        full = force or key != self._cache
+        hover_action = ""
+        if hover and self.custom_active():
+            ent = self.custom_key_entry(hover)
+            if ent:
+                bits = [str(ent.get("name") or ""),
+                        str(ent.get("action") or ""),
+                        str(ent.get("combo") or "")]
+                hover_action = "  ·  ".join(b for b in bits if b)
+        prev_action = getattr(self, "_rendered_hover_action", "")
+        custom_hover_changed = self.custom_active() and (hover_action != prev_action)
+        full = force or key != self._cache or (custom_hover_changed and bool(hover_action or prev_action))
         if not full and hover == self._rendered_hover:
             return
         if full:
             self._cache = key
             try:
                 im, x, y = render.render_image(
-                    self.cfg, combo, mapping,
-                    shortcuts.app_display_name(self.app_key),
+                    self.cfg, combo, mapping, app_name,
                     lang, self.current_mods(), self.locked, self.flash_sid,
-                    None, self.mouse_mode(), self.sticky and not self.locked)
+                    None, self.mouse_mode(), self.sticky and not self.locked,
+                    hover_action=hover_action,
+                    custom_mode=self.custom_active())
                 self._base_image = im
                 self._blit_xy = (x, y)
                 self.overlay.set_click_through(not self.mouse_mode())
@@ -1090,10 +1274,10 @@ class KeyHintApp:
             return
         out = self._base_image.copy()
         render.draw_hover(out, self.hit_keys, hover)
-        opacity = (max(10, min(100, int(self.cfg.get("opacity", 92))))
-                   if self.cfg.get("fade", True) else 100)
-        data = render.to_premultiplied_bgra(out, opacity)
+        # v4.08：透明度只作用于面板背景（render_image 内处理），键帽恒不透明
+        data = render.to_premultiplied_bgra(out, 100)
         self._rendered_hover = hover
+        self._rendered_hover_action = hover_action
         self.overlay.blit(data, out.width, out.height, *self._blit_xy)
 
     # ------------------------------------------------------------ 鼠标点击
@@ -1132,7 +1316,12 @@ class KeyHintApp:
             self.refresh(force=True)
 
     def hit_test(self, px: int, py: int):
-        """覆盖层客户区坐标 -> 键位 id"""
+        """覆盖层客户区坐标 -> 键位 id（符号页返回 CAT:n / SYM:n）"""
+        if self.symbol_mode:
+            for c in self.symbol_cells:
+                if c.x <= px <= c.x + c.w and c.y <= py <= c.y + c.h:
+                    return c.sid
+            return None
         for k in self.hit_keys:
             if k.sid == "__HEADER__":
                 continue
@@ -1140,8 +1329,45 @@ class KeyHintApp:
                 return canonical(k.sid)
         return None
 
+    def _send_custom_combo(self, text: str) -> bool:
+        """发送用户为某个键帽自定义的组合键，例如 Ctrl+Shift+S。"""
+        mods, vk = parse_hotkey(text)
+        if mods is None or not vk:
+            self._balloon("自定义快捷键无效",
+                          "组合键格式应为「Ctrl+Shift+S」这类修饰键 + 主键。")
+            return False
+        mod_vks = [MOD_VK[m] for m in ("Ctrl", "Shift", "Alt", "Win") if m in mods]
+        w.release_modifiers()
+        w.send_combo(mod_vks, vk)
+        return True
+
     def click_key(self, sid: str):
         """点击虚拟键帽 == 按下对应物理组合键（等价于「按键盘」）"""
+        # v4.08：符号页——分类切换 / 符号直接输入
+        if self.symbol_mode:
+            if sid and sid.startswith("CAT:"):
+                try:
+                    self.symbol_cat = int(sid.split(":", 1)[1])
+                except ValueError:
+                    pass
+                self.hover_sid = None
+                self.refresh(force=True)
+                return
+            if sid and sid.startswith("SYM:"):
+                self._input_symbol(sid)
+                return
+            return
+
+        # v4.11：自定义面板优先——点击键帽执行为该键配置的实际组合键
+        if self.custom_active():
+            entry = self.custom_key_entry(sid)
+            combo_text = str((entry or {}).get("combo") or "")
+            if combo_text:
+                if self._send_custom_combo(combo_text):
+                    self.flash(sid)
+                    self.reset_hide_timer()
+                    return
+
         if sid in ("CTRL", "SHIFT", "ALT", "WIN"):
             name = {"CTRL": "Ctrl", "SHIFT": "Shift",
                     "ALT": "Alt", "WIN": "Win"}[sid]
@@ -1170,6 +1396,157 @@ class KeyHintApp:
         if (not self.cfg.get("click_keep", True) and self.sticky
                 and not self.locked and not self.held):
             self.hide()
+
+    # ------------------------------------------------------------ v4.08 符号页
+    def _remember_input_target(self):
+        """记录当前真正的前台窗口作为符号/按键输入目标。
+
+        过滤掉本程序自己的窗口：覆盖层 / 控件条 / 主消息窗口 / 各设置窗口
+        都是 WS_EX_NOACTIVATE 或工具窗口，正常不会成为前台；一旦记录到它们
+        说明用户此刻并没有在外部程序打字，保留上一次的有效目标更稳妥。
+        """
+        try:
+            fg = w.foreground_hwnd()
+            if not fg:
+                return
+            own = (int(self.hwnd), int(self.overlay.hwnd or 0),
+                   int(getattr(self.controlbar, "hwnd", 0) or 0))
+            if w.is_own_window(fg, own):
+                return
+            self._symbol_target_hwnd = fg
+        except Exception:
+            pass
+
+    def _input_symbol(self, sid: str):
+        """点击符号格：用 Unicode 直注把字符送入当前焦点窗口（WPS / 任意编辑器）。"""
+        import symbols as sym
+        try:
+            idx = int(sid.split(":", 1)[1])
+        except (ValueError, IndexError):
+            return
+        item = sym.symbol_at(self.symbol_cat, idx)
+        if not item:
+            return
+        char, name, alt, uni = item
+        was_click = self.mouse_mode()
+        # v4.08 修复：点击分层窗口发生在鼠标消息过程内，此刻切焦点 + 同步
+        # SendInput 会与鼠标/焦点状态交织，字符容易丢失或发到错误窗口。
+        # 把「目标窗口 + 字符 + uni标记」排队，交给 timer 6 在消息循环空闲时注入。
+        # uni 以 CMD: 开头表示格式命令（选中文字转上标/下标），非可输入字符。
+        target = self._symbol_target_hwnd or w.foreground_hwnd()
+        self._pending_symbol = (char, target, uni)
+        w.user32.KillTimer(self.hwnd, 6)
+        w.user32.SetTimer(self.hwnd, 6, 30, None)
+        self.flash(sid)
+        self.note_bar_activity()
+        # 视觉确认：短暂把格子点亮
+        self.refresh()
+
+    def _flush_symbol(self):
+        """timer 6：在实际目标窗口恢复焦点后注入排队的符号。"""
+        pending = self._pending_symbol
+        self._pending_symbol = None
+        if not pending:
+            return
+        char, target, uni = pending
+        try:
+            if target and not w.is_own_window(target):
+                w.focus_window(target)
+            # 关键修复：用户左手按住 Ctrl/Alt/Shift 弹出面板、右手点符号，注入时
+            # 辅助键仍按着。WPS 会把 Unicode 事件解释为 Ctrl+字符 等组合快捷键
+            # （执行保存/加粗等命令），而非输入字符；普通对话框不解析组合键所以正常。
+            # 注入前先清除辅助键逻辑状态，让目标窗口只收到「无修饰」的字符。
+            w.release_modifiers()
+            if uni and uni.startswith("CMD:"):
+                # 格式命令：对已选中文字套用真上标/下标（Word/WPS 标准快捷键）
+                # Ctrl+= 下标，Ctrl+Shift+= 上标。VK_OEM_PLUS(0xBB) 即 "=" 键。
+                # v4.10：改用 send_combo（具体左右键+扫描码+分帧），修复 WPS
+                # 漏判 Shift 导致 Ctrl+Shift+= 退化成 Ctrl+= 的问题。
+                VK_OEM_PLUS = 0xBB
+                cmd = uni[4:]
+                if cmd == "SUB":
+                    w.send_combo([w.VK_CONTROL], VK_OEM_PLUS)
+                elif cmd == "SUP":
+                    w.send_combo([w.VK_CONTROL, w.VK_SHIFT], VK_OEM_PLUS)
+            else:
+                # v4.10：WPS/Word 里 Unicode 专用上标字符(⁰⁴⁵⁶⁷⁸⁹⁺⁻…)会 fallback
+                # 到全角字体、占位很大。检测目标为 Office 时改用「普通半角字符 +
+                # 真上标格式」：输入普通字符→选中它→Ctrl+Shift+=，显示/排版正常。
+                exe = w.exe_of_hwnd(target) if target else ""
+                is_office = any(k in exe for k in _OFFICE_EXES)
+                if is_office and char in _SUPER_TO_PLAIN:
+                    self._type_super_formatted(_SUPER_TO_PLAIN[char])
+                else:
+                    w.send_unicode(char)          # KEYEVENTF_UNICODE，无需 NumLock / Alt 码
+        except Exception as e:
+            print("符号输入失败：", e)
+
+    def _type_super_formatted(self, plain_char: str):
+        """在 Office 中把普通半角字符输入后套用真上标格式。
+
+        流程：输入普通字符 → Shift+← 选中它 → Ctrl+Shift+= 套上标 → → 移开光标。
+        用分帧 send_combo 保证 WPS 正确识别组合键；间隔不宜过长以免卡顿 UI。
+        """
+        import time
+        w.send_unicode(plain_char)
+        time.sleep(0.06)                                   # 等 WPS 落字
+        w.send_combo([w.VK_SHIFT], w.VK_LEFT, 0.025)       # 选中刚输入的字符
+        time.sleep(0.04)
+        w.send_combo([w.VK_CONTROL, w.VK_SHIFT], 0xBB, 0.025)  # Ctrl+Shift+= 上标
+        time.sleep(0.04)
+        w.send_combo([], w.VK_RIGHT, 0.02)                 # 光标移到字符后，退出选中
+
+    def toggle_symbols(self, on: bool | None = None, from_bar: bool = False):
+        """
+        打开 / 关闭符号页。
+
+        v4.09：符号页不再「锁定常驻」，而是跟虚拟键盘同一套显示逻辑——
+        按住任意辅助键弹出、松开按 hide_delay_ms 延时消失。开关打开时开启
+        可点击并主动弹一次（sticky 保持到用户关闭或按延时设置消失）。
+        """
+        import symbols as sym
+        target = (not self.symbol_mode) if on is None else bool(on)
+        if target == self.symbol_mode and self.visible:
+            return
+        if target:
+            # 从控件条进入符号页时同样记下输入目标（此时焦点应仍在外部程序）
+            self._remember_input_target()
+            self._mouse_click_before_symbols = bool(self.cfg.get("mouse_click", False))
+            self.symbol_mode = True
+            self.symbol_cat = max(0, min(len(sym.CATEGORIES) - 1, self.symbol_cat))
+            self.locked = False               # v4.09：不锁定，跟随延时消失
+            self.cfg["mouse_click"] = True    # 符号页必须可点击
+            self.overlay.set_click_through(False)
+            self.virtual_mods.clear()
+            self.detect_context()
+            if not self.visible:
+                self.combo = self.current_combo() or "Ctrl"
+                self.visible = True
+            self.sticky = True               # 打开后保持显示，直到用户操作/按设置消失
+            self._cache = None
+            self.refresh(force=True)
+            self.note_bar_activity()         # 给一段宽限，避免刚开就消失
+        else:
+            self.close_symbols()
+
+    def close_symbols(self):
+        """关闭符号页，回到普通键盘（若原本未按住辅助键则收起）。"""
+        if not self.symbol_mode:
+            return
+        self.symbol_mode = False
+        self._symbol_base = None
+        self.locked = False
+        # 恢复进入符号页前的点击模式（符号页强制开启了 mouse_click）
+        if self._mouse_click_before_symbols is not None:
+            self.cfg["mouse_click"] = self._mouse_click_before_symbols
+            self._mouse_click_before_symbols = None
+        self._cache = None
+        self.hover_sid = None
+        self.mouse_down_sid = None
+        if not self.held:
+            self.hide()
+        else:
+            self.refresh(force=True)
 
     def _overlay_mouse(self, hwnd, msg, wp, lp):
         """分层窗口的鼠标回调；未开启点击模式时窗口是穿透的，收不到任何消息"""
@@ -1209,7 +1586,7 @@ class KeyHintApp:
                                                       max(0, self.sh - d["ch"])))
                 else:
                     new_scale = d["scale"] * (d["cw"] + dx) / float(d["cw"])
-                    self.cfg["kb_scale"] = round(max(0.6, min(2.4, new_scale)), 3)
+                    self.cfg["kb_scale"] = round(max(0.5, min(2.0, new_scale)), 3)
                     self.cfg["kb_pos_x"], self.cfg["kb_pos_y"] = d["ox"], d["oy"]
                 self._cache = None
                 self.refresh(force=True)
@@ -1248,6 +1625,7 @@ class KeyHintApp:
         if msg == w.WM_RBUTTONUP:
             x, y = self._local_xy()
             ox, oy = self.overlay.rect[0], self.overlay.rect[1]
+            self._right_click_sid = self.hit_test(x, y)
             w.user32.PostMessageW(self.hwnd, w.WM_APP + 21,
                                   w.WPARAM(int(ox + x)), w.LPARAM(int(oy + y)))
             return 0
@@ -1265,12 +1643,18 @@ class KeyHintApp:
             return
         mod = w.MODIFIER_VK.get(vk)
         if mod:
+            # v4.09：符号页下任意辅助键（Ctrl/Alt/Shift/Win）都只当作普通弹出，
+            # 不再有 Alt 特判——按任意键弹出的面板都能点符号。
             if down:
                 if mod in self.held:
                     return                       # 系统自动重复，忽略
                 self.held.add(mod)
                 if not self.cfg["enabled"] or not self.cfg["modifiers"].get(mod, True):
                     return
+                # v4.08 修复：在弹出面板前记住「用户正在打字的窗口」。
+                # 只有它才是符号/快捷键应当送达的目标；点击覆盖层后焦点会丢，
+                # 注入时再把这个窗口的前台焦点恢复回来。
+                self._remember_input_target()
                 if self.visible and not self.locked:
                     self.sticky = False
                     w.user32.KillTimer(self.hwnd, 4)
@@ -1314,6 +1698,9 @@ class KeyHintApp:
         if sid == "ESC" and self.visible and (self.locked or self.sticky
                                               or self._settings_preview
                                               or self._bar_grace or not self.held):
+            if self.symbol_mode:
+                self.close_symbols()
+                return
             self.locked = False
             self._settings_preview = False
             self.hide()
@@ -1361,9 +1748,9 @@ class KeyHintApp:
         w.user32.SetCursorPos(x0, y0)
         w.user32.mouse_event(0x0002, 0, 0, 0, 0)   # LEFTDOWN
         w.user32.SetCursorPos(x1, y1)
-        lx = int(controlbar.TRACK_X0 +
-                 (controlbar.TRACK_X1 - controlbar.TRACK_X0) * ratio)
-        lp = (controlbar.TRACK_Y << 16) | (lx & 0xFFFF)
+        L = self.controlbar.layout
+        lx = int(L["track_x0"] + (L["track_x1"] - L["track_x0"]) * ratio)
+        lp = (L["track_y"] << 16) | (lx & 0xFFFF)
         w.user32.SendMessageW(self.controlbar.hwnd, w.WM_MOUSEMOVE,
                               w.WPARAM(0), w.LPARAM(lp))
         w.user32.mouse_event(0x0004, 0, 0, 0, 0)   # LEFTUP
@@ -1419,6 +1806,10 @@ class KeyHintApp:
                         self.note_bar_activity()
                     else:
                         self._bar_grace = False
+                elif tid == 6:
+                    # v4.08：符号延迟注入（在鼠标消息处理结束后执行）
+                    w.user32.KillTimer(hwnd, 6)
+                    self._flush_symbol()
                 elif tid == 7:
                     # v4.07：托盘图标保活刷新（防止被资源管理器折叠隐藏）
                     try:
@@ -1430,19 +1821,40 @@ class KeyHintApp:
                 self._debug_click("C")
                 return 0
             if msg == w.WM_APP + 78 and os.environ.get("KEYHINT_DEBUG"):
-                self._debug_bar_click({0: "click", 1: "fade", 2: "track",
-                                       3: "delay"}.get(int(wp), "click"))
+                self._debug_bar_click({0: "custom", 1: "symbols", 2: "click",
+                                       3: "fade", 4: "delay", 5: "track"}.get(int(wp), "custom"))
                 return 0
             if msg == w.WM_APP + 79 and os.environ.get("KEYHINT_DEBUG"):
                 self._debug_bar_drag(int(lp) / 1000.0)
                 return 0
             if msg == w.WM_APP + 21:
-                # 覆盖层上右键：在鼠标位置弹出托盘同款菜单
+                # 覆盖层右键：键帽上直接进入自定义快捷键设置；空白区显示托盘菜单
                 x = C.c_int(int(wp)).value
                 y = C.c_int(int(lp)).value
-                cmd = w.show_popup_menu(hwnd, self.menu_items(), x, y)
-                if cmd:
-                    self.handle_cmd(int(cmd))
+                sid = getattr(self, "_right_click_sid", None)
+                if sid and not self.symbol_mode and not str(sid).startswith(("CAT:", "SYM:")):
+                    items = [
+                        ("info", "键帽 %s  ·  自定义快捷键" % sid),
+                        ("sep",),
+                        (ID_CUSTOM_EDIT_KEY, "自定义设置此键…", False, True),
+                        (ID_CUSTOM_MANAGE, "管理多套自定义面板…", False, True),
+                        ("sep",),
+                        (ID_CUSTOM_TRAY_MENU, "显示托盘菜单", False, True),
+                    ]
+                    cmd = w.show_popup_menu(hwnd, items, x, y)
+                    if cmd == ID_CUSTOM_EDIT_KEY:
+                        self.open_custom_key_editor(sid, x, y)
+                    elif cmd == ID_CUSTOM_MANAGE:
+                        self.open_custom_panel_manager()
+                    elif cmd == ID_CUSTOM_TRAY_MENU:
+                        cmd = w.show_popup_menu(hwnd, self.menu_items(), x, y)
+                        if cmd:
+                            self.handle_cmd(int(cmd))
+                else:
+                    cmd = w.show_popup_menu(hwnd, self.menu_items(), x, y)
+                    if cmd:
+                        self.handle_cmd(int(cmd))
+                self._right_click_sid = None
                 return 0
             if msg == w.WM_APP + 20:
                 mouse = int(lp) & 0xFFFF
@@ -1482,6 +1894,10 @@ class KeyHintApp:
         except Exception:
             pass
         try:
+            self.settings_dialog.close()
+        except Exception:
+            pass
+        try:
             self.hook.stop()
         except Exception:
             pass
@@ -1503,6 +1919,13 @@ class KeyHintApp:
             self.controlbar.close()
         except Exception:
             pass
+        for name in ("custom_key_dialog", "custom_panel_dialog"):
+            try:
+                dlg = getattr(self, name, None)
+                if dlg and dlg.hwnd:
+                    w.user32.DestroyWindow(dlg.hwnd)
+            except Exception:
+                pass
 
     def run(self):
         try:
@@ -1512,11 +1935,56 @@ class KeyHintApp:
 
 
 # ---------------------------------------------------------------- 演示模式
-def demo(cfg, combo="Ctrl", app="word", seconds=10, shot=False):
+def demo(cfg, combo="Ctrl", app="word", seconds=10, shot=False, symbols=False):
     w.enable_dpi_awareness()
     sw, sh = w.screen_size()
     cfg["screen_w"], cfg["screen_h"] = sw, sh
     overlay = w.LayeredWindow("KeyHintDemoOverlay")
+    if symbols:
+        # v4.08：符号页演示——真实分层窗口渲染符号页 + 控件条，用于自检截图
+        import symbol_render as symr
+        cfg["mouse_click"] = True
+        data, cw, ch, x, y, cells = symr.render_bgra(cfg, 0)
+        overlay.blit(data, cw, ch, x, y)
+        st = dict(cfg); st["symbol_mode"] = True
+        bar = controlbar.ControlBar(
+            get_state=lambda: st,
+            on_toggle_click=lambda: None, on_toggle_fade=lambda: None,
+            on_opacity=lambda v: st.update(opacity=v),
+            on_commit=lambda: None, on_activity=lambda: None,
+            on_cycle_delay=lambda: None, on_toggle_symbols=lambda: None)
+        bar.place(x, y, cw, ch, sw)
+        bar.refresh(force=True)   # 确保控件条置于符号页之上
+        print("符号页演示：画布=%dx%d 位置=(%d,%d) 符号总数=%d"
+              % (cw, ch, x, y, __import__("symbols").count()))
+        if shot:
+            import threading as _t, time as _time
+            def _grab():
+                _time.sleep(1.2)
+                try:
+                    from PIL import ImageGrab
+                    dest = str(HERE / "_symbol_screen_check.png")
+                    ImageGrab.grab().save(dest)
+                    print("符号页屏幕截图：", dest)
+                except Exception as e:
+                    print("截图失败：", e)
+            _t.Thread(target=_grab, daemon=True).start()
+        def _sproc(hwnd, msg, wp, lp):
+            if msg == w.WM_TIMER and int(wp) == 7:
+                w.user32.PostQuitMessage(0)
+                return 0
+            if msg == w.WM_DESTROY:
+                return 0
+            return w.user32.DefWindowProcW(hwnd, msg, wp, lp)
+        _cb = w.WNDPROC(_sproc)
+        _h = w.create_message_window("KeyHintSymDemo", "KeyHintSymDemo", _cb)
+        w.user32.SetTimer(_h, 7, seconds * 1000, None)
+        try:
+            w.message_loop()
+        finally:
+            bar.close()
+            overlay.close()
+        return
     detect_exe = w.foreground_exe()
     key = app if app in shortcuts.APP_PROFILES or app == "generic" else shortcuts.detect_app(detect_exe)
     mapping = shortcuts.resolve(combo, key, cfg.get("custom_shortcuts"))
@@ -1603,7 +2071,8 @@ def main():
                     return args[i + 1]
             return default
         demo(cfg, opt("--combo", "Ctrl"), opt("--app", "word"),
-             int(opt("--seconds", "10")), shot="--shot" in args)
+             int(opt("--seconds", "10")), shot="--shot" in args,
+             symbols="--symbols" in args)
         return
     if "--off" in args:
         cfg["enabled"] = False
@@ -1612,7 +2081,8 @@ def main():
     if "--click" in args:                    # 命令行临时开启点击模式（不写盘）
         cfg["mouse_click"] = True
     app = KeyHintApp(cfg, start_disabled="--off" in args)
-    print("KeyHint 已启动。按住 Ctrl / Shift / Alt / Win 查看指令，右键托盘图标设置。")
+    print("%s v%s 已启动。按住 Ctrl / Shift / Alt / Win 查看指令，右键托盘图标设置。"
+      % (APP_NAME, APP_VERSION))
     app.run()
 
 

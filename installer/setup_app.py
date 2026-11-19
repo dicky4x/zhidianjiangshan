@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-KeyHint 安装 / 卸载程序（单文件、免管理员、绿色安装到用户目录）
+指点江山 安装 / 卸载程序（单文件、免管理员、绿色安装到用户目录）
 ================================================================
 双击              图形化安装向导
 --uninstall       卸载（图形确认）
@@ -10,7 +10,7 @@ KeyHint 安装 / 卸载程序（单文件、免管理员、绿色安装到用户
 --no-autostart    不写开机自启
 --no-desktop      不建桌面快捷方式
 --no-register     不写「应用和功能」卸载项
---no-kill         覆盖安装时不结束正在运行的 KeyHint
+--no-kill         覆盖安装时不结束正在运行的 指点江山
 --purge-config    卸载时连同个人设置一起删除
 
 安装内容：程序文件、桌面 / 开始菜单快捷方式、卸载入口、可选开机自启。
@@ -38,16 +38,16 @@ try:
 except Exception:                                    # 静默模式不依赖 GUI
     tk = None
 
-APP_NAME = "KeyHint"
-APP_TITLE = "KeyHint · 情境式指令提示"
-VERSION = "4.07"
-PUBLISHER = "KeyHint"
-EXE_NAME = "KeyHint.exe"
+APP_NAME = "指点江山"
+APP_TITLE = "指点江山 · 情境式指令提示"
+VERSION = "4.12"
+PUBLISHER = "指点江山"
+EXE_NAME = "指点江山.exe"
 UNINSTALLER_NAME = "Uninstall.exe"
-UNINST_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\KeyHint"
+UNINST_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\ZhiDianJiangShan"
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
-RUN_VALUE = "KeyHint"
-CONFIG_DIR_NAME = "KeyHint"
+RUN_VALUE = "指点江山"
+CONFIG_DIR_NAME = "指点江山"
 
 if sys.stdout is None:
     sys.stdout = open(os.devnull, "w", encoding="utf-8", errors="replace")
@@ -234,15 +234,15 @@ def write_uninstall_entry(dest: Path):
     with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, UNINST_KEY, 0,
                             winreg.KEY_WRITE) as k:
         vals = {
-            "DisplayName": "KeyHint · 情境式指令提示",
+            "DisplayName": "指点江山 · 情境式指令提示",
             "DisplayVersion": VERSION,
             "Publisher": PUBLISHER,
             "DisplayIcon": str(dest / EXE_NAME) + ",0",
             "InstallLocation": str(dest),
             "UninstallString": '"%s" --uninstall' % (dest / UNINSTALLER_NAME),
             "QuietUninstallString": '"%s" --uninstall --silent' % (dest / UNINSTALLER_NAME),
-            "HelpLink": "https://github.com/dicky4x/KeyHint",
-            "URLInfoAbout": "https://github.com/dicky4x/KeyHint",
+            "HelpLink": "https://github.com/dicky4x/zhidianjiangshan",
+            "URLInfoAbout": "https://github.com/dicky4x/zhidianjiangshan",
             "NoModify": 1,
             "NoRepair": 1,
         }
@@ -260,7 +260,7 @@ def set_autostart(dest: Path, enabled: bool = True):
                 winreg.SetValueEx(k, RUN_VALUE, 0, winreg.REG_SZ,
                                   '"%s"' % (dest / EXE_NAME))
             else:
-                # 只删除确实指向 KeyHint 的值，避免误删用户其它自启项
+                # 只删除确实指向 指点江山 的值，避免误删用户其它自启项
                 try:
                     v, _ = winreg.QueryValueEx(k, RUN_VALUE)
                     if "keyhint" in str(v).lower():
@@ -294,7 +294,7 @@ def delete_registry_entries():
 
 
 def remove_shortcuts():
-    names = ["KeyHint.lnk", "卸载 KeyHint.lnk"]
+    names = ["指点江山.lnk", "卸载 指点江山.lnk"]
     folders = [desktop_dir(), start_menu_dir()]
     for folder in folders:
         for n in names:
@@ -369,14 +369,14 @@ def do_install(opts: dict, progress) -> tuple[bool, str]:
 
         progress(78, "正在创建快捷方式...")
         ico = icon_file()
-        create_shortcut(start_menu_dir() / "KeyHint.lnk", exe, dest,
+        create_shortcut(start_menu_dir() / "指点江山.lnk", exe, dest,
                         icon=ico, desc=APP_TITLE)
-        create_shortcut(start_menu_dir() / "卸载 KeyHint.lnk",
+        create_shortcut(start_menu_dir() / "卸载 指点江山.lnk",
                         dest / UNINSTALLER_NAME, dest, args="--uninstall",
-                        icon=ico, desc="卸载 KeyHint")
+                        icon=ico, desc="卸载 指点江山")
         desktop_ok = True
         if opts.get("desktop", True):
-            desktop_ok = create_shortcut(desktop_dir() / "KeyHint.lnk",
+            desktop_ok = create_shortcut(desktop_dir() / "指点江山.lnk",
                                          exe, dest, icon=ico, desc=APP_TITLE)
 
         progress(90, "正在写入安装信息...")
@@ -443,7 +443,7 @@ def _delayed_remove(dest: Path, purge_config: bool):
 def do_uninstall(opts: dict, progress) -> tuple[bool, str]:
     dest = installed_dir()
     try:
-        progress(10, "正在结束 KeyHint...")
+        progress(10, "正在结束 指点江山...")
         if opts.get("kill", True):
             kill_running()
         progress(35, "正在移除快捷方式...")
@@ -455,13 +455,13 @@ def do_uninstall(opts: dict, progress) -> tuple[bool, str]:
         if (dest / EXE_NAME).exists():
             _delayed_remove(dest, bool(opts.get("purge_config", False)))
         else:
-            for p in (dest / "KeyHint.lnk",):
+            for p in (dest / "指点江山.lnk",):
                 try:
                     p.unlink()
                 except Exception:
                     pass
         progress(100, "卸载完成")
-        msg = "KeyHint 已卸载。\n\n程序文件会在几秒内自动清理完毕。"
+        msg = "指点江山 已卸载。\n\n程序文件会在几秒内自动清理完毕。"
         msg += ("\n个人设置已一并删除。" if opts.get("purge_config")
                 else "\n个人设置已保留在 %s，重新安装后可继续使用。" % user_config_dir())
         return True, msg
@@ -589,7 +589,7 @@ class InstallerUI:
         sep.pack(fill="x", pady=(0, 16))
 
         if self.mode == "uninstall":
-            ttk.Label(card, text="确定要卸载 KeyHint 吗？",
+            ttk.Label(card, text="确定要卸载 指点江山 吗？",
                       style="Head.TLabel").pack(anchor="w")
             ttk.Label(card, text="将移除程序文件、快捷方式和开机自启项。",
                       style="Muted.TLabel").pack(anchor="w", pady=(8, 0))
@@ -688,9 +688,9 @@ class InstallerUI:
                     self.cancel.configure(text="关闭", state="normal",
                                           command=self.root.destroy)
                     if not ok:
-                        messagebox.showerror("KeyHint", msg)
+                        messagebox.showerror("指点江山", msg)
                     else:
-                        messagebox.showinfo("KeyHint", msg)
+                        messagebox.showinfo("指点江山", msg)
                     return
         except queue.Empty:
             pass

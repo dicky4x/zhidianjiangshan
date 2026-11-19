@@ -107,13 +107,13 @@ def build(style: str = "compact", narrow: bool = False, screen_w: int = 1920,
     """
     返回 (keys, canvas_w, canvas_h, unit, header)
     style: 'compact' 悬浮紧凑键盘（华为折叠态全键盘造型） / 'full' 含数字键盘的 104 键
-    scale: v4.01 新增的键盘缩放倍率（0.6 ~ 2.4），仅影响几何尺寸，键位关系不变
+    scale: v4.01 新增的键盘缩放倍率（v4.11：0.5 ~ 2.0），仅影响几何尺寸，键位关系不变
     """
     total_units = 18.55 if style == "compact" else 22.9
     unit = min((screen_w - 140.0) / total_units, 64.0 if style == "compact" else 58.0)
     unit = max(unit, 34.0)
     # v4.01：缩放后再按屏幕宽度夹紧，避免放大后左右超出可视区
-    scale = max(0.55, min(2.4, float(scale or 1.0)))
+    scale = max(0.5, min(2.0, float(scale or 1.0)))
     # +0.76u 是左右 pad_x 合计，避免放大后画布超出屏幕
     unit = min(unit * scale, (screen_w - 60.0) / (total_units + 0.76))
     unit = max(unit, 18.0)

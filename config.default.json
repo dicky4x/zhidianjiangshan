@@ -1,7 +1,7 @@
 {
   "enabled": true,
   "delay_ms": 0,
-  "opacity": 100,
+  "opacity": 80,
   "fade": true,
   "mouse_click": true,
   "click_keep": true,
@@ -12,8 +12,8 @@
   "hint_mode": "icon",
   "theme": "dark",
   "wallpaper_theme": true,
-  "position": "bottom",
-  "sound": false,
+  "position": "top",
+  "sound": true,
   "app_context": true,
   "show_lang": true,
   "modifiers": {
@@ -23,12 +23,20 @@
     "Win": true
   },
   "custom_shortcuts": {},
+  "custom_panels": [
+    {
+      "name": "我的快捷键",
+      "keys": {}
+    }
+  ],
+  "active_custom_panel": 0,
+  "custom_active": false,
   "popup_enabled": true,
   "toggle_hotkey": "Ctrl+Esc",
   "kb_scale": 1.0,
   "kb_pos_x": null,
   "kb_pos_y": null,
   "font_scale": 1.0,
-  "taskbar_dock": true,
+  "taskbar_dock": false,
   "autostart": true
 }

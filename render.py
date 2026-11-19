@@ -22,6 +22,8 @@ import layout
 
 WINDIR = os.environ.get("WINDIR", r"C:\Windows")
 FONTS = os.path.join(WINDIR, "Fonts")
+APP_NAME = "指点江山"
+APP_VERSION = "4.12"
 
 
 @lru_cache(maxsize=64)
@@ -41,6 +43,22 @@ def font(size: int, bold: bool = False):
 # ---------------------------------------------------------------- v4.02 字体大小
 # 默认 1.0 = v4.00 原始字号；可独立自定义，不再跟随键盘缩放倍率。
 _FONT_SCALE = 1.0
+
+# v4.08：背景面板透明度（10~255）。键帽 / 文字 / 高亮永远不透明；
+# 只有「面板背景」随此值变化，实现「背景透明度可调、键帽不透视」。
+_BG_ALPHA = 255
+
+
+def background_alpha(cfg) -> int:
+    """从配置计算背景面板 alpha。
+
+    fade=False（半透明总开关关闭）=> 255 全不透明；
+    fade=True 时按 opacity(10~100) 映射到 alpha(约 26~255)。
+    """
+    if not cfg.get("fade", True):
+        return 255
+    pct = max(10, min(100, int(cfg.get("opacity", 100) or 100)))
+    return max(26, min(255, int(round(255 * pct / 100.0))))
 
 
 def sf(size: int, bold: bool = False):
@@ -70,8 +88,9 @@ def is_common(sid: str, label: str | None) -> bool:
 
 
 # 常用键的金橙色系：深色/浅色主题下都比默认蓝紫色更醒目
-COMMON_FILL = (255, 178, 46, 252)
-COMMON_GLOW = (255, 150, 20, 125)
+# v4.08：全部改为不透明，避免高亮键帽透出底层文本
+COMMON_FILL = (255, 178, 46, 255)
+COMMON_GLOW = (255, 150, 20, 255)
 COMMON_EDGE = (255, 240, 196, 255)
 COMMON_TEXT = (48, 28, 4, 255)
 
@@ -136,25 +155,27 @@ def _shadow_layer(cw: int, ch: int, color):
 def theme_colors(theme: str, accent: tuple[int, int, int] | None = None):
     light = system_is_light() if theme == "auto" else (theme == "light")
     acc = accent or (48, 108, 246)
+    # v4.08 修复：键盘上所有「实体像素」一律 alpha=255，杜绝任何透视。
+    # 半透明只保留给面板背景（由 bg_opacity 单独控制）和面板外阴影。
+    # 键帽本体 / 边框 / 文字 / 高亮 / 发光全部不透明，避免键帽之间出现
+    # 「缝隙」、键帽顶部出现「透视到底层文本的长条」。
     if light:
         return {
-            "panel": (248, 250, 253, 232), "panel_border": (40, 60, 95, 60),
-            # v4.03：空键帽改为不透明实心，避免透出下方文字/图标
-            "key": (255, 255, 255, 255), "key_border": (45, 60, 90, 70),
-            "key_text": (36, 46, 66, 235), "dim": (60, 74, 100, 150),
-            "header": (36, 46, 66, 235), "sub": (70, 84, 110, 190),
-            "hot": acc + (242,), "hot_edge": (255, 255, 255, 210),
-            "hot_text": (255, 255, 255, 255), "glow": acc + (85,),
+            "panel": (248, 250, 253, 255), "panel_border": (200, 210, 228, 255),
+            "key": (255, 255, 255, 255), "key_border": (205, 214, 230, 255),
+            "key_text": (36, 46, 66, 255), "dim": (110, 122, 145, 255),
+            "header": (36, 46, 66, 255), "sub": (95, 108, 132, 255),
+            "hot": acc + (255,), "hot_edge": (255, 255, 255, 255),
+            "hot_text": (255, 255, 255, 255), "glow": acc + (255,),
             "accent": acc + (255,), "shadow": (20, 30, 50, 120),
         }
     return {
-        "panel": (17, 21, 30, 228), "panel_border": (255, 255, 255, 42),
-        # v4.03：空键帽改为不透明实心（深石板灰），不再透出下方内容
-        "key": (36, 43, 58, 255), "key_border": (255, 255, 255, 46),
-        "key_text": (222, 230, 244, 225), "dim": (255, 255, 255, 120),
-        "header": (242, 246, 255, 240), "sub": (255, 255, 255, 150),
-        "hot": acc + (238,), "hot_edge": (255, 255, 255, 175),
-        "hot_text": (255, 255, 255, 255), "glow": acc + (95,),
+        "panel": (17, 21, 30, 255), "panel_border": (78, 86, 104, 255),
+        "key": (36, 43, 58, 255), "key_border": (92, 101, 122, 255),
+        "key_text": (222, 230, 244, 255), "dim": (168, 178, 198, 255),
+        "header": (242, 246, 255, 255), "sub": (176, 187, 208, 255),
+        "hot": acc + (255,), "hot_edge": (255, 255, 255, 255),
+        "hot_text": (255, 255, 255, 255), "glow": acc + (255,),
         "accent": acc + (255,), "shadow": (0, 0, 0, 150),
     }
 
@@ -194,12 +215,14 @@ def _draw_key(d, k, label, C, hint_mode, accent, pressed, flash=False, hover=Fal
     text_c = COMMON_TEXT if (hot and common) else C["hot_text"]
 
     if hot:
-        d.rounded_rectangle((x - 3, y - 3, x + w + 3, y + h + 3), r + 3, fill=glow_c)
+        # v4.08：去掉半透明发光描边与顶部高光长条——它们会在键帽上形成
+        # 「透视到底层文本的长条」。高亮键帽整体用不透明金色实心绘制。
+        # v4.08b：发光外扩收窄到 1px（原 3px）。相邻高亮键间距约 6px，
+        # 外扩 3px 会把缝隙填满让键帽看起来「贴在一起」；收窄后缝隙清晰可见，
+        # 且发光仍是不透明实心，不产生任何透视。
+        d.rounded_rectangle((x - 1, y - 1, x + w + 1, y + h + 1), r + 1, fill=glow_c)
         d.rounded_rectangle(box, r, fill=fill_c, outline=edge_c,
                             width=2 if common else 1)
-        # 顶部高光
-        d.rounded_rectangle((x + 3, y + 2, x + w - 3, y + min(5, h * 0.12)), 2,
-                            fill=(255, 255, 255, 48 if common else 38))
     else:
         d.rounded_rectangle(box, r, fill=C["key"], outline=C["key_border"], width=1)
         if pressed:
@@ -213,14 +236,16 @@ def _draw_key(d, k, label, C, hint_mode, accent, pressed, flash=False, hover=Fal
                fill=text_c if hot else C["key_text"], anchor="la")
 
     if flash:
-        d.rounded_rectangle((x - 2, y - 2, x + w + 2, y + h + 2), r + 2,
-                            outline=(255, 255, 255, 245), width=2)
-        d.rounded_rectangle(box, r, fill=(255, 255, 255, 40))
+        # v4.08：点击反馈只用不透明描边，不再叠加半透明白色填充（会造成透视）
+        # v4.08b：外扩收窄到 1px，避免点击时描边盖住相邻键帽缝隙
+        d.rounded_rectangle((x - 1, y - 1, x + w + 1, y + h + 1), r + 1,
+                            outline=(255, 255, 255, 255), width=2)
 
     if hover:
         # v4.01：鼠标悬停只用实心高亮描边，不再叠加半透明白色让键帽「变淡」
-        d.rounded_rectangle((x - 4, y - 4, x + w + 4, y + h + 4), r + 4,
-                            outline=(255, 255, 255, 255), width=3)
+        # v4.08b：外扩收窄到 1px，避免悬停时描边盖住相邻键帽缝隙
+        d.rounded_rectangle((x - 1, y - 1, x + w + 1, y + h + 1), r + 1,
+                            outline=(255, 255, 255, 255), width=2)
 
     if not hot:
         return
@@ -287,7 +312,9 @@ def render_image(cfg, combo: str, mapping: dict[str, str], app_name: str,
                  locked: bool = False, flash_sid: str | None = None,
                  hover_sid: str | None = None, mouse_mode: bool = False,
                  pending_hide: bool = False,
-                 cursor_xy: tuple[int, int] | None = None):
+                 cursor_xy: tuple[int, int] | None = None,
+                 hover_action: str | None = None,
+                 custom_mode: bool = False):
     """
     绘制成普通 RGBA 图，返回 (Image, x, y)；供预览导出与正式渲染共用。
     cursor_xy：v4.04 起已忽略（保留参数仅为兼容旧调用）。
@@ -301,9 +328,11 @@ def render_image(cfg, combo: str, mapping: dict[str, str], app_name: str,
     C = theme_colors(theme, accent)
 
     # v4.02：字体大小独立配置，默认 1.0 = v4.00 原始字号（与键盘缩放解耦）
-    global _FONT_SCALE
+    global _FONT_SCALE, _BG_ALPHA
     _FONT_SCALE = max(0.5, min(2.0, float(cfg.get("font_scale", 1.0) or 1.0)))
-    scale = max(0.55, min(2.4, float(cfg.get("kb_scale", 1.0) or 1.0)))
+    # v4.08：只有面板背景跟随透明度设置，键帽等实体像素恒为不透明
+    _BG_ALPHA = background_alpha(cfg)
+    scale = max(0.5, min(2.0, float(cfg.get("kb_scale", 1.0) or 1.0)))
 
     sw, sh = cfg.get("screen_w", 1920), cfg.get("screen_h", 1080)
     keys, cw, ch, unit, header = layout.build(style, narrow, sw, scale)
@@ -314,8 +343,11 @@ def render_image(cfg, combo: str, mapping: dict[str, str], app_name: str,
     im = Image.alpha_composite(im, _shadow_layer(cw, ch, C["shadow"]))
 
     d = ImageDraw.Draw(im)
+    # v4.08：面板背景按透明度设置绘制；键帽等实体像素在其上以不透明覆盖，
+    # 实现「背景可调透明、键帽始终清晰不透视」。
+    panel_fill = C["panel"][:3] + (_BG_ALPHA,)
     d.rounded_rectangle((8, 8, cw - 8, ch - 8), 18,
-                        fill=C["panel"], outline=C["panel_border"], width=1)
+                        fill=panel_fill, outline=C["panel_border"], width=1)
 
     # ---------- 顶部信息条 ----------
     pad = 18
@@ -327,7 +359,7 @@ def render_image(cfg, combo: str, mapping: dict[str, str], app_name: str,
     d.rounded_rectangle((title_pad, 14, title_pad + pill_w, 40), 13, fill=C["accent"])
     d.text((title_pad + pill_w / 2, 27), pill, font=pf, fill=(255, 255, 255, 255), anchor="mm")
 
-    title = "情境式指令提示  ·  " + app_name
+    title = "%s v%s  ·  情境式指令提示  ·  %s" % (APP_NAME, APP_VERSION, app_name)
     d.text((title_pad + pill_w + 14, 27), title, font=sf(13, True),
            fill=C["header"], anchor="lm")
     ms = max(0, int(cfg.get("hide_delay_ms", 0) or 0))
@@ -370,15 +402,21 @@ def render_image(cfg, combo: str, mapping: dict[str, str], app_name: str,
         cy = header + unit * 2.8
         d.rounded_rectangle((cw * 0.16, cy - 26, cw * 0.84, cy + 26), 14,
                             fill=C["panel_border"], outline=C["key_border"], width=1)
-        d.text((cw / 2, cy),
-               "「%s」暂无内置指令  ·  可在 config.json 的 custom_shortcuts 中自行添加" % combo,
+        if custom_mode:
+            empty_tip = "自定义面板  ·  所有键位需自行设置  ·  右键任意键帽自定义组合键"
+        else:
+            empty_tip = "「%s」暂无内置指令  ·  可在 config.json 的 custom_shortcuts 中自行添加" % combo
+        d.text((cw / 2, cy), empty_tip,
                font=sf(13, True), fill=C["header"], anchor="mm")
 
     # ---------- 底部信息条 ----------
     bottom_y = ch - 26
     n = sum(1 for k in keys if k.sid != "__HEADER__"
             and layout.canonical(k.sid) in mapping)
-    left_text = f"共 {n} 组可用指令   ·   金橙色 = 常用功能   ·   灰色键无对应功能"
+    if hover_action:
+        left_text = "当前键：%s" % str(hover_action)[:72]
+    else:
+        left_text = f"共 {n} 组可用指令   ·   金橙色 = 常用功能   ·   灰色键无对应功能"
     lf = sf(10)
     d.text((pad, bottom_y), left_text, font=lf, fill=C["sub"], anchor="lm")
     left_w = _tw(d, left_text, lf)
@@ -418,8 +456,10 @@ def render_image(cfg, combo: str, mapping: dict[str, str], app_name: str,
     if isinstance(px, (int, float)) and isinstance(py, (int, float)):
         x = max(0, min(int(px), max(0, sw - cw)))
         y = max(0, min(int(py), max(0, sh - ch)))
-    elif cfg.get("position", "bottom") == "bottom":
+    elif cfg.get("position", "top") == "bottom":
         y = sh - ch - 56
+    elif cfg.get("position", "top") == "top":
+        y = 56                      # v4.11：默认停靠屏幕顶部，给悬浮功能条留出空间
     else:
         y = (sh - ch) // 2
     return im, x, max(0, y)
@@ -465,9 +505,9 @@ def render(cfg, combo: str, mapping: dict[str, str], app_name: str,
     im, x, y = render_image(cfg, combo, mapping, app_name, lang,
                             pressed_mods, locked, flash_sid, hover_sid,
                             mouse_mode, pending_hide, cursor_xy)
-    opacity = (max(10, min(100, int(cfg.get("opacity", 92))))
-               if cfg.get("fade", True) else 100)
-    return to_premultiplied_bgra(im, opacity), im.width, im.height, x, y
+    # v4.08：透明度已在 render_image 内只作用于面板背景，键帽保持不透明。
+    # 这里整图 alpha 固定 100，绝不能再整体衰减（否则键帽重新透视）。
+    return to_premultiplied_bgra(im, 100), im.width, im.height, x, y
 
 
 if __name__ == "__main__":

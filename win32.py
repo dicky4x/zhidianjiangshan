@@ -104,6 +104,7 @@ VK_LSHIFT, VK_RSHIFT, VK_SHIFT = 0xA0, 0xA1, 0x10
 VK_LCONTROL, VK_RCONTROL, VK_CONTROL = 0xA2, 0xA3, 0x11
 VK_LMENU, VK_RMENU, VK_MENU = 0xA4, 0xA5, 0x12
 VK_LWIN, VK_RWIN = 0x5B, 0x5C
+VK_LEFT, VK_RIGHT, VK_HOME, VK_END = 0x25, 0x27, 0x24, 0x23
 
 MODIFIER_VK = {
     VK_LCONTROL: "Ctrl", VK_RCONTROL: "Ctrl", VK_CONTROL: "Ctrl",
@@ -198,6 +199,7 @@ class INPUT(C.Structure):
 INPUT_KEYBOARD = 1
 KEYEVENTF_KEYUP = 0x0002
 KEYEVENTF_EXTENDEDKEY = 0x0001
+KEYEVENTF_UNICODE = 0x0004      # wVk=0, wScan=Unicode 码点：绕过键盘布局直接输入字符
 LLKHF_INJECTED = 0x10
 # 只有我们自己注入的按键才带这个 dwExtraInfo，用于在低级钩子里识别并忽略，
 # 避免「点击键帽 -> 注入 Ctrl -> 钩子以为用户按住了 Ctrl」的自激。
@@ -237,6 +239,12 @@ _sig(user32.GetWindowThreadProcessId, [W.HWND, C.POINTER(W.DWORD)], W.DWORD)
 _sig(user32.GetSystemMetrics, [C.c_int], C.c_int)
 _sig(user32.GetCursorPos, [C.POINTER(POINT)], W.BOOL)
 _sig(user32.SetForegroundWindow, [W.HWND], W.BOOL)
+_sig(user32.BringWindowToTop, [W.HWND], W.BOOL)
+_sig(user32.SetActiveWindow, [W.HWND], W.HWND)
+_sig(user32.IsIconic, [W.HWND], W.BOOL)
+_sig(user32.AttachThreadInput, [W.DWORD, W.DWORD, W.BOOL], W.BOOL)
+_sig(user32.GetAncestor, [W.HWND, W.UINT], W.HWND)
+_sig(user32.SetFocus, [W.HWND], W.HWND)
 _sig(user32.GetAsyncKeyState, [C.c_int], C.c_short)
 _sig(user32.GetKeyboardLayout, [W.DWORD], W.HKL)
 _sig(user32.SetWindowsHookExW, [C.c_int, HOOKPROC, W.HINSTANCE, W.DWORD], W.HHOOK)
@@ -270,6 +278,7 @@ _sig(kernel32.QueryFullProcessImageNameW,
 _sig(kernel32.GetCurrentThreadId, [], W.DWORD)
 _sig(kernel32.GetLastError, [], W.DWORD)
 _sig(user32.SendInput, [W.UINT, C.POINTER(INPUT), C.c_int], W.UINT)
+_sig(user32.MapVirtualKeyW, [W.UINT, W.UINT], W.UINT)
 _sig(user32.LoadCursorW, [W.HINSTANCE, C.c_void_p], W.HANDLE)
 _sig(user32.SetCursor, [W.HANDLE], W.HANDLE)
 _sig(user32.WindowFromPoint, [POINT], W.HWND)
@@ -334,11 +343,117 @@ def send_keys(events: list[tuple[int, bool]]) -> int:
     return sent
 
 
+def _send_one(vk: int, down: bool) -> int:
+    """发送单个按键事件（具体键 + 扫描码 + INJECT_MAGIC）。"""
+    e = INPUT()
+    e.type = INPUT_KEYBOARD
+    e.ki.wVk = int(vk) & 0xFFFF
+    e.ki.wScan = int(user32.MapVirtualKeyW(int(vk) & 0xFFFF, 0)) & 0xFFFF
+    e.ki.dwFlags = (0 if down else KEYEVENTF_KEYUP)
+    if vk in EXTENDED_VKS:
+        e.ki.dwFlags |= KEYEVENTF_EXTENDEDKEY
+    e.ki.dwExtraInfo = INJECT_MAGIC
+    return int(user32.SendInput(1, C.byref(e), C.sizeof(INPUT)))
+
+
+def send_combo(mods: list[int], vk: int, gap_s: float = 0.035) -> int:
+    """稳健发送组合键，专治 WPS/Word 对「一次性 SendInput 多事件」漏判修饰键。
+
+    与 send_keys 一次性塞满 INPUT 数组不同，这里逐帧发送并在每帧间留间隔，
+    让目标程序有机会逐条处理；修饰键统一用具体左右键（VK_LCONTROL/VK_LSHIFT）
+    并填扫描码，避免 WPS 把 Ctrl+Shift+= 误判成 Ctrl+=。
+    """
+    _MAP = {VK_CONTROL: VK_LCONTROL, VK_SHIFT: VK_LSHIFT, VK_MENU: VK_LMENU}
+    keys = [_MAP.get(m, m) for m in mods]
+    n = 0
+    for k in keys:
+        n += _send_one(k, True)
+        C.windll.kernel32.Sleep(int(gap_s * 1000))
+    n += _send_one(vk, True)
+    C.windll.kernel32.Sleep(int(gap_s * 1000))
+    n += _send_one(vk, False)
+    for k in reversed(keys):
+        n += _send_one(k, False)
+        C.windll.kernel32.Sleep(int(gap_s * 1000))
+    return n
+
+
+def send_unicode(text: str) -> int:
+    """
+    用 KEYEVENTF_UNICODE 把字符串直接注入当前焦点窗口，不依赖键盘布局、
+    NumLock 或目标软件对 Alt 码的解析。适用于 √ × ☑ 等任意 BMP 内符号。
+
+    每个字符发一对 keydown/keyup，wScan=码点，wVk=0。
+    全部带 INJECT_MAGIC，低级键盘钩子据此忽略、避免状态自激。
+    超出 BMP 的字符（如部分 emoji）拆成 UTF-16 代理对逐个发送。
+    """
+    if not text:
+        return 0
+    units: list[int] = []
+    for ch in text:
+        cp = ord(ch)
+        if cp <= 0xFFFF:
+            units.append(cp)
+        else:
+            cp -= 0x10000
+            units.append(0xD800 + (cp >> 10))
+            units.append(0xDC00 + (cp & 0x3FF))
+    events = (INPUT * (len(units) * 2))()
+    n = 0
+    for i, u in enumerate(units):
+        for up in (False, True):
+            e = events[n]
+            e.type = INPUT_KEYBOARD
+            e.ki.wVk = 0
+            e.ki.wScan = u & 0xFFFF
+            e.ki.dwFlags = KEYEVENTF_UNICODE | (KEYEVENTF_KEYUP if up else 0)
+            e.ki.dwExtraInfo = INJECT_MAGIC
+            n += 1
+    sent = user32.SendInput(n, events, C.sizeof(INPUT))
+    if sent != n:
+        print("Unicode SendInput 只发送了 %d/%d 个事件，错误码 %s"
+              % (sent, n, kernel32.GetLastError()))
+    return sent
+
+
 def mouse_xy(lparam: int) -> tuple[int, int]:
     """从 WM_MOUSE* 的 lParam 解析相对窗口客户区坐标（可能为负）"""
     x = C.c_short(int(lparam) & 0xFFFF).value
     y = C.c_short((int(lparam) >> 16) & 0xFFFF).value
     return x, y
+
+
+def release_modifiers() -> int:
+    """清除当前按住的 Ctrl/Shift/Alt 逻辑状态，避免注入字符被目标软件当成快捷键。
+
+    用户左手按住 Ctrl 弹出面板、右手点符号，注入时 Ctrl 仍按着；WPS 会把
+    Unicode 事件当成 Ctrl+字符 组合键执行对应功能（如保存/加粗），而不是输入
+    字符。发送这些修饰键的 KEYUP 可清除目标窗口的修饰键状态。事件带
+    INJECT_MAGIC，本程序全局钩子会忽略，不影响面板显示逻辑。
+    只释放当前实际按住的修饰键，避免无谓事件干扰。
+    """
+    vk_groups = []
+    if async_down(VK_CONTROL) or async_down(VK_LCONTROL) or async_down(VK_RCONTROL):
+        vk_groups.extend((VK_LCONTROL, VK_RCONTROL, VK_CONTROL))
+    if async_down(VK_SHIFT) or async_down(VK_LSHIFT) or async_down(VK_RSHIFT):
+        vk_groups.extend((VK_LSHIFT, VK_RSHIFT, VK_SHIFT))
+    if async_down(VK_MENU) or async_down(VK_LMENU) or async_down(VK_RMENU):
+        vk_groups.extend((VK_LMENU, VK_RMENU, VK_MENU))
+    if not vk_groups:
+        return 0
+    events = (INPUT * len(vk_groups))()
+    for i, vk in enumerate(vk_groups):
+        e = events[i]
+        e.type = INPUT_KEYBOARD
+        e.ki.wVk = vk
+        e.ki.wScan = 0
+        e.ki.dwFlags = KEYEVENTF_KEYUP
+        e.ki.dwExtraInfo = INJECT_MAGIC
+    n = user32.SendInput(len(events), events, C.sizeof(INPUT))
+    if n != len(events):
+        print("释放修饰键只发送了 %d/%d，错误码 %s"
+              % (n, len(events), kernel32.GetLastError()))
+    return n
 
 
 def held_modifiers() -> set[str]:
@@ -378,7 +493,9 @@ def create_message_window(class_name: str, title: str, wndproc) -> W.HWND:
     # WS_POPUP：窗口没有边框/标题栏非客户区，客户区 = 整个窗口矩形。
     # 若用默认的 WS_OVERLAPPED(0)，分层窗口会出现 (8,31) 的客户区偏移，
     # 矮控件条上的点击会全部变成 WM_NC* 消息而收不到 WM_LBUTTONDOWN。
-    hwnd = user32.CreateWindowExW(0, class_name, title, WS_POPUP, 0, 0, 0, 0,
+    # v4.09：主消息窗口加 WS_EX_TOOLWINDOW，确保它永远不进任务栏 / Alt+Tab；
+    # 程序图标只保留在系统托盘。托盘图标由独立 TrayIcon 维护，不受此标志影响。
+    hwnd = user32.CreateWindowExW(WS_EX_TOOLWINDOW, class_name, title, WS_POPUP, 0, 0, 0, 0,
                                   W.HWND(0), W.HMENU(0), hinst, None)
     if not hwnd:
         raise OSError("CreateWindowExW failed: %s" % kernel32.GetLastError())
@@ -644,6 +761,29 @@ def foreground_exe() -> str:
         return ""
 
 
+def exe_of_hwnd(hwnd: int) -> str:
+    """返回指定窗口所属进程的 exe 文件名（小写），失败返回空串。"""
+    try:
+        if not hwnd:
+            return ""
+        pid = W.DWORD()
+        user32.GetWindowThreadProcessId(W.HWND(hwnd), C.byref(pid))
+        if not pid.value:
+            return ""
+        h = kernel32.OpenProcess(0x1000, False, pid.value)
+        if not h:
+            return ""
+        try:
+            buf = C.create_unicode_buffer(1024)
+            size = W.DWORD(1024)
+            ok = kernel32.QueryFullProcessImageNameW(h, 0, buf, C.byref(size))
+            return os.path.basename(buf.value).lower() if ok else ""
+        finally:
+            kernel32.CloseHandle(h)
+    except Exception:
+        return ""
+
+
 def foreground_tid() -> int:
     try:
         hwnd = user32.GetForegroundWindow()
@@ -651,6 +791,69 @@ def foreground_tid() -> int:
         return int(user32.GetWindowThreadProcessId(hwnd, C.byref(pid)))
     except Exception:
         return 0
+
+
+def foreground_hwnd() -> int:
+    """当前前台窗口句柄（整数），供输入类工具记住「真正的目标窗口」。"""
+    try:
+        return int(user32.GetForegroundWindow() or 0)
+    except Exception:
+        return 0
+
+
+def is_own_window(hwnd: int, own: tuple[int, ...] = ()) -> bool:
+    """判断 hwnd 是否属于本程序自己（含其顶层所有者），用于过滤目标窗口。"""
+    if not hwnd:
+        return True
+    try:
+        cur_tid, _ = user32.GetWindowThreadProcessId(W.HWND(hwnd), None)
+        my_tid = kernel32.GetCurrentThreadId()
+        if cur_tid and cur_tid == my_tid:
+            return True
+    except Exception:
+        pass
+    return int(hwnd) in tuple(int(h) for h in own if h)
+
+
+def focus_window(hwnd: int) -> bool:
+    """
+    强制把前台焦点交给指定窗口，绕过 Windows 的前台锁定限制。
+    点击虚拟符号页时，鼠标落在 WS_EX_NOACTIVATE 的分层窗口上，系统可能把
+    焦点切到桌面/资源管理器；注入 Unicode 前必须先把焦点还给真正的目标窗口，
+    否则字符会发给错误的窗口（表现为乱码 / 无输入）。
+    """
+    hwnd = int(hwnd or 0)
+    if not hwnd:
+        return False
+    h = W.HWND(hwnd)
+    if not user32.IsWindow(h):
+        return False
+    try:
+        fg = user32.GetForegroundWindow()
+        if fg == h:
+            return True
+        cur_tid = kernel32.GetCurrentThreadId()
+        fg_tid = user32.GetWindowThreadProcessId(fg, None) if fg else 0
+        tgt_tid = user32.GetWindowThreadProcessId(h, None)
+        attached_fg = bool(fg_tid and fg_tid != cur_tid
+                           and user32.AttachThreadInput(cur_tid, fg_tid, True))
+        attached_tgt = bool(tgt_tid and tgt_tid != cur_tid
+                            and user32.AttachThreadInput(cur_tid, tgt_tid, True))
+        try:
+            if user32.IsIconic(h):
+                user32.ShowWindow(h, SW_RESTORE)
+            user32.BringWindowToTop(h)
+            user32.SetForegroundWindow(h)
+            user32.SetActiveWindow(h)
+            user32.SetFocus(h)
+        finally:
+            if attached_fg:
+                user32.AttachThreadInput(cur_tid, fg_tid, False)
+            if attached_tgt:
+                user32.AttachThreadInput(cur_tid, tgt_tid, False)
+        return int(user32.GetForegroundWindow() or 0) == hwnd
+    except Exception:
+        return False
 
 
 _LANG_NAMES = {

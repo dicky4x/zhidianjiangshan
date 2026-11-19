@@ -17,11 +17,11 @@ import winreg
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-SETUP = ROOT / "安装包" / "KeyHint_Setup_4.07.exe"
+SETUP = ROOT / "安装包" / "指点江山_Setup_4.12.exe"
 TESTDIR = ROOT / "build" / "installtest"
 LOG = Path(os.environ.get("TEMP", ".")) / "keyhint_setup.log"
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
-UNINST_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\KeyHint"
+UNINST_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\ZhiDianJiangShan"
 
 ok = True
 
@@ -48,7 +48,7 @@ def desktop_dir():
 
 def start_dir():
     return (Path(os.environ.get("APPDATA", str(Path.home())))
-            / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "KeyHint")
+            / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "指点江山")
 
 
 def reg_value(key, name):
@@ -111,8 +111,8 @@ def gui_window_titles():
                 buf = C.create_unicode_buffer(n + 1)
                 u.GetWindowTextW(hwnd, buf, n + 1)
                 t = buf.value
-                # 只认安装 / 卸载向导自己的标题，排除资源管理器等含 KeyHint 的窗口
-                if t.startswith(("安装 ", "卸载 ")) and "KeyHint" in t:
+                # 只认安装 / 卸载向导自己的标题，排除资源管理器等含 指点江山 的窗口
+                if t.startswith(("安装 ", "卸载 ")) and "指点江山" in t:
                     found.append(t)
         return True
 
@@ -126,11 +126,11 @@ def main():
         return 1
 
     # ---- 备份可能被本测试覆盖的用户数据 ----
-    saved_run = reg_value(RUN_KEY, "KeyHint")
+    saved_run = reg_value(RUN_KEY, "指点江山")
     saved_lnks = {}
-    for p in (desktop_dir() / "KeyHint.lnk",
-              start_dir() / "KeyHint.lnk",
-              start_dir() / "卸载 KeyHint.lnk"):
+    for p in (desktop_dir() / "指点江山.lnk",
+              start_dir() / "指点江山.lnk",
+              start_dir() / "卸载 指点江山.lnk"):
         if p.exists():
             saved_lnks[p] = p.read_bytes()
 
@@ -144,7 +144,7 @@ def main():
         check("安装器返回 0", rc == 0, "rc=%s %s" % (rc, tail[:160]))
 
         print("== 2/5 安装产物 ==")
-        exe = TESTDIR / "KeyHint.exe"
+        exe = TESTDIR / "指点江山.exe"
         uninst = TESTDIR / "Uninstall.exe"
         check("主程序已释放", exe.exists())
         check("卸载程序已释放", uninst.exists())
@@ -152,9 +152,9 @@ def main():
               or (TESTDIR / "_internal" / "PIL").is_dir())
         check("图标与默认配置随包", (TESTDIR / "_internal" / "keyhint.ico").exists()
               and (TESTDIR / "_internal" / "config.default.json").exists())
-        dlnk = desktop_dir() / "KeyHint.lnk"
-        slnk = start_dir() / "KeyHint.lnk"
-        ulnk = start_dir() / "卸载 KeyHint.lnk"
+        dlnk = desktop_dir() / "指点江山.lnk"
+        slnk = start_dir() / "指点江山.lnk"
+        ulnk = start_dir() / "卸载 指点江山.lnk"
         check("桌面快捷方式", dlnk.exists() and dlnk.stat().st_size > 0)
         check("开始菜单快捷方式", slnk.exists() and ulnk.exists())
         if dlnk.exists():
@@ -167,7 +167,7 @@ def main():
               str(reg_value(UNINST_KEY, "InstallLocation")).rstrip("\\/").lower()
               == str(TESTDIR).rstrip("\\/").lower())
         check("开机自启已写入", str(exe).lower() in
-              str(reg_value(RUN_KEY, "KeyHint")).lower())
+              str(reg_value(RUN_KEY, "指点江山")).lower())
 
         print("== 3/5 图形化向导 ==")
         p = subprocess.Popen([str(SETUP)], cwd=str(SETUP.parent),
@@ -211,11 +211,11 @@ def main():
                                     winreg.KEY_WRITE) as k:
                 if saved_run is None:
                     try:
-                        winreg.DeleteValue(k, "KeyHint")
+                        winreg.DeleteValue(k, "指点江山")
                     except FileNotFoundError:
                         pass
                 else:
-                    winreg.SetValueEx(k, "KeyHint", 0, winreg.REG_SZ, saved_run)
+                    winreg.SetValueEx(k, "指点江山", 0, winreg.REG_SZ, saved_run)
             for p, data in saved_lnks.items():
                 p.parent.mkdir(parents=True, exist_ok=True)
                 p.write_bytes(data)
