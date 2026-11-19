@@ -4,7 +4,9 @@
 
 把 HUAWEI MateBook Fold 非凡大师虚拟键盘上那个「长按 Ctrl，C 键亮起并显示『复制』」的功能，搬到普通 Windows 电脑上。
 
-> **不想自己构建？** 直接到 [Releases 页面](https://github.com/dicky4x/zhidianjiangshan/releases/latest) 下载 `指点江山_Setup_4.12.exe`（图形化安装包，17 MB）或 `指点江山_绿色版_4.12.zip`（免安装），双击即可用。本地交付物统一放在 `安装包/`。
+> **不想自己构建？** 直接到 [Releases 页面](https://github.com/dicky4x/zhidianjiangshan/releases/latest) 下载 `ZhidianJiangshan_Setup_4.12.exe`（图形化安装包，17 MB）或 `ZhidianJiangshan_Portable_4.12.zip`（免安装），双击即可用。
+>
+> 注：GitHub 会强制过滤 Release 附件名里的中文字符，故下载包用拼音命名；下载到本地后可自行改回中文名。仓库 `安装包/` 目录及本地交付物仍沿用中文名。
 
 这是一个**常驻系统托盘的小插件**：按住 `Ctrl` / `Shift` / `Alt` / `Win`（或它们的双键组合），屏幕浮出**半透明全尺寸虚拟键盘**，所有能与之匹配的组合键**同时亮起**，显示「图标 + 功能文字」；**松开辅助键后按你设定的延时消失**（默认立即），穿透模式下鼠标完全穿透，不挡住后面的文字和文件。
 
