@@ -22,6 +22,9 @@ selftest_v*.py
 make_showcase*.py
 preview.py
 _gen_video_assets.py
+installer/capture_gui.py
+installer/diag_gui.py
+installer/smoke_test.py
 
 # 本地个人配置与本机工具（含本机状态，不入库；默认模板 config.default.json 会上传）
 config.json
